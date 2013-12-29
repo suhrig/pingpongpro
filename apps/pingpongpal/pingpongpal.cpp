@@ -1,6 +1,7 @@
 // ==========================================================================
 //				pingpongpal
 // ==========================================================================
+// todo: copyright
 
 #include <seqan/basic.h>
 #include <seqan/sequence.h>
@@ -60,9 +61,8 @@ typedef TStrand TStrands[2];
 // Functions
 // ==========================================================================
 
-
 // function to parse command-line arguments
-ArgumentParser::ParseResult parseCommandLine(AppOptions & options, int argc, char const ** argv)
+ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char const ** argv)
 {
 	// Setup ArgumentParser.
 	ArgumentParser parser("pingpongpal");
@@ -117,9 +117,15 @@ void tic()
 // Additionally, it counts the number of reads with an A/U at base 10 as well as
 // the number of reads with a terminal base different from the reference genome.
 // The latter two figures help identify the significance of a putative piRNA signature.
-void countReadsInBamFile(BamStream &bamFile, TStrands &readCountsByPosition)
+// Parameters:
+//   bamFile: the BAM/SAM file from where to load the reads
+//   readCountsUpstream: stats for positions were reads on the minus strand overlap the upstream (5') ends of reads on the plus strand
+//   readCountsDownstream: stats for positions were reads on the minus strand overlap the downstream (3') ends of reads on the plus strand
+void countReadsInBamFile(BamStream &bamFile, TStrands &readCountsUpstream, TStrands &readCountsDownstream)
 {
-	TPosition *pposition;
+	TPosition *positionUpstream;
+	TPosition *positionDownstream;
+
 	size_t seqLength;
 	BamAlignmentRecord record;
 	while (!atEnd(bamFile))
@@ -131,23 +137,32 @@ void countReadsInBamFile(BamStream &bamFile, TStrands &readCountsByPosition)
 		{
 			seqLength = length(record.seq);
 			if (hasFlagRC(record)) {
-				pposition = &(readCountsByPosition[STRAND_MINUS][record.rID][record.beginPos+seqLength]);
+				positionUpstream = &(readCountsUpstream[STRAND_MINUS][record.rID][record.beginPos+seqLength]);
+				positionDownstream = &(readCountsDownstream[STRAND_MINUS][record.rID][record.beginPos]);
 			} else {
-				pposition = &(readCountsByPosition[STRAND_PLUS][record.rID][record.beginPos]);
+				positionUpstream = &(readCountsUpstream[STRAND_PLUS][record.rID][record.beginPos]);
+				positionDownstream = &(readCountsDownstream[STRAND_PLUS][record.rID][record.beginPos+seqLength]);
 			}
-			pposition->reads++;
+			positionUpstream->reads++;
+			positionDownstream->reads++;
 			if (seqLength >= 10)
 				//todo: comparison with lowercase sequences
-				if ((record.seq[9] == 'A') || (record.seq[9] == 'T') || (record.seq[9] == 'U'))
-					pposition->readsWithAOrUAtBase10++;
-			pposition->readsWithNonTemplateBase++;
+				if ((record.seq[9] == 'A') || (record.seq[9] == 'T'))
+				{
+					positionUpstream->readsWithAOrUAtBase10++;
+					positionDownstream->readsWithAOrUAtBase10++;
+				}
+			positionUpstream->readsWithNonTemplateBase++;
+			positionDownstream->readsWithNonTemplateBase++;
 		}
 	}
 }
 
 // find those positions on the genome, where reads on opposite strands overlap by 10 nucleotides
-void findOverlappingReads(TStrands &readCountsByPosition)
+void findOverlappingReads(TStrands &readCounts, unsigned int upstreamStrand)
 {
+	unsigned int downstreamStrand = (upstreamStrand == STRAND_PLUS) ? STRAND_MINUS : STRAND_PLUS;
+
 	/*for (int strand = 0; strand <= 1; strand++)
 	{
 		for(TStrand::iterator contig = readCountsByPosition[strand].begin(); contig != readCountsByPosition[strand].end(); ++contig)
@@ -165,10 +180,10 @@ void findOverlappingReads(TStrands &readCountsByPosition)
 	int minCount = 0;
 	TStrand::iterator contigOnOppositeStrand;
 	TContig::iterator positionOnOppositeStrand;
-	for(TStrand::iterator contig = readCountsByPosition[STRAND_PLUS].begin(); contig != readCountsByPosition[STRAND_PLUS].end(); ++contig)
+	for(TStrand::iterator contig = readCounts[downstreamStrand].begin(); contig != readCounts[downstreamStrand].end(); ++contig)
 	{
-		contigOnOppositeStrand = readCountsByPosition[STRAND_MINUS].find(contig->first);
-		if (contigOnOppositeStrand != readCountsByPosition[STRAND_MINUS].end())
+		contigOnOppositeStrand = readCounts[upstreamStrand].find(contig->first);
+		if (contigOnOppositeStrand != readCounts[upstreamStrand].end())
 		{
 			for(TContig::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
 			{
@@ -181,19 +196,17 @@ void findOverlappingReads(TStrands &readCountsByPosition)
 //				      density[minCount]++;
 
 //				if ((position->second.reads >= 100) && (positionOnOppositeStrand->second.reads >= 100))
-						cout << contig->first << "." << position->first << ": reads+ " << position->second.reads << ", a/u+ " << position->second.readsWithAOrUAtBase10 << ", non-template bases+ " << position->second.readsWithNonTemplateBase << ", reads- " << positionOnOppositeStrand->second.reads << ", a/u- " << positionOnOppositeStrand->second.readsWithAOrUAtBase10 << ", non-template bases- " << positionOnOppositeStrand->second.readsWithNonTemplateBase << endl;
+					cout << contig->first << "." << position->first << ": strand " << upstreamStrand << ", reads " << position->second.reads << ", a/u " << position->second.readsWithAOrUAtBase10 << ", non-template bases " << position->second.readsWithNonTemplateBase << ", strand " << downstreamStrand << ", reads " << positionOnOppositeStrand->second.reads << ", a/u " << positionOnOppositeStrand->second.readsWithAOrUAtBase10 << ", non-template bases " << positionOnOppositeStrand->second.readsWithNonTemplateBase << endl;
 
 				}
 			}
 		}
 	}
 
-
 /*      for (int strand = 0; strand <= 1; strand++)
 		for (TStrand::iterator contig = readCountsByPosition[strand].begin(); contig != readCountsByPosition[strand].end(); ++contig)
 			for (TContig::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
 				cout << strand << "." << contig->first << "." << position->first << ": reads " << position->second.reads << ", a/u " << position->second.readsWithAOrUAtBase10 << ", non-template bases " << position->second.readsWithNonTemplateBase << endl;*/
-
 
 //      for (int i = 0; i < 1000; i++)
 //	      cout << i << "\t" << density[i] << endl;
@@ -202,28 +215,38 @@ void findOverlappingReads(TStrands &readCountsByPosition)
 // program entry point
 int main(int argc, char const ** argv)
 {
-	// Parse the command line.
+	// parse the command line
 	AppOptions options;
 	if (parseCommandLine(options, argc, argv) != ArgumentParser::PARSE_OK)
 		return 1;
 
+	// read from stdin, if no input file is given
 	if (options.inputFiles.size() == 0)
 		options.inputFiles.push_back("/dev/stdin");
 
-	TStrand readCountsByPosition[2];
+	TStrands readCountsUpstream; // stats about positions where reads on the minus strand overlap with the upstream ends of reads on the plus strand
+	TStrands readCountsDownstream; // stats about positions where reads on the minus strand overlap with the downstream ends of reads on the plus strand
 
 	// read all BAM/SAM files
 	for(TInputFiles::iterator inputFile = options.inputFiles.begin(); inputFile != options.inputFiles.end(); ++inputFile)
 	{
 		// open SAM/BAM file
 		BamStream bamFile(toCString(*inputFile));
+		if (!isGood(bamFile))
+		{
+			cerr << "Failed to open file: " << *inputFile << endl;
+			return 1;
+		}
 		// for every position in the genome, count the number of reads that start at a given position
-		countReadsInBamFile(bamFile, readCountsByPosition);
+		countReadsInBamFile(bamFile, readCountsUpstream, readCountsDownstream);
 		// close SAM/BAM file
 		close(bamFile);
 	}
 
-	findOverlappingReads(readCountsByPosition);
+	// find positions where reads on the minus strand overlap with the upstream ends of reads on the plus strand
+	findOverlappingReads(readCountsUpstream, STRAND_MINUS);
+	// find positions where reads on the minus strand overlap with the downstream ends of reads on the plus strand
+	findOverlappingReads(readCountsDownstream, STRAND_PLUS);
 
 	return 0;
 }
