@@ -1,36 +1,6 @@
 // ==========================================================================
 //                                pingpongpal
 // ==========================================================================
-// Copyright (c) 2006-2013, Knut Reinert, FU Berlin
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//     * Neither the name of Knut Reinert or the FU Berlin nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL KNUT REINERT OR THE FU BERLIN BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
-// LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
-// OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
-// DAMAGE.
-//
-// ==========================================================================
-// Author: Your Name <your.email@example.net>
-// ==========================================================================
 
 #include <seqan/basic.h>
 #include <seqan/sequence.h>
@@ -45,19 +15,13 @@ using namespace std;
 using namespace seqan;
 
 // ==========================================================================
-// Classes
+// Types & Classes
 // ==========================================================================
 
-// --------------------------------------------------------------------------
-// Class AppOptions
-// --------------------------------------------------------------------------
-
-// This struct stores the options from the command line.
-//
-// You might want to rename this to reflect the name of your app.
-
+// type to hold the list of input files given as arguments to the program
 typedef vector<CharString> TInputFiles;
 
+// struct to store the options from the command line
 struct AppOptions
 {
         TInputFiles inputFiles;
@@ -66,16 +30,39 @@ struct AppOptions
         {}
 };
 
+// constants to refer to + and - strands throughout the program
+const unsigned int STRAND_PLUS = 0;
+const unsigned int STRAND_MINUS = 1;
+
+// for every locus (position) on the genome the following attributes are calculated:
+//  - reads: the number of reads which begin at this position
+//  - readsWithAOrUAtBase10: how many of these reads have an Adenine or a Uracil at base 10 (which is typical for piRNAs)
+//  - readsWithNonTemplateBase: how many of these reads have terminal base which is different from the reference genome (also typical for piRNAs)
+struct TPosition
+{
+        int reads;
+        int readsWithAOrUAtBase10;
+        int readsWithNonTemplateBase;
+        TPosition():
+                reads(0),
+                readsWithAOrUAtBase10(0),
+                readsWithNonTemplateBase(0)
+        {}
+};
+
+// array of TPosition to store the above stats for each position of a contig/chromosome
+typedef map< unsigned int, TPosition > TPositionMap;
+
+// array of TPositionMap to store the above status for each contig/chromosome
+typedef map< unsigned int, TPositionMap > TContigMap;
+
 // ==========================================================================
 // Functions
 // ==========================================================================
 
-// --------------------------------------------------------------------------
-// Function parseCommandLine()
-// --------------------------------------------------------------------------
 
-ArgumentParser::ParseResult
-parseCommandLine(AppOptions & options, int argc, char const ** argv)
+// function to parse command-line arguments
+ArgumentParser::ParseResult parseCommandLine(AppOptions & options, int argc, char const ** argv)
 {
         // Setup ArgumentParser.
         ArgumentParser parser("pingpongpal");
@@ -111,13 +98,7 @@ parseCommandLine(AppOptions & options, int argc, char const ** argv)
         return parserResult;
 }
 
-// --------------------------------------------------------------------------
-// Function main()
-// --------------------------------------------------------------------------
-
-// Program entry point.
-
-
+// function to measure time between the first and second invocation of the function
 void tic()
 {
         static time_t start = 0;
@@ -132,20 +113,7 @@ void tic()
         }
 }
 
-struct TPosition
-{
-        int reads;
-        int readsWithAOrUAtBase10;
-        int readsWithNonTemplateBase;
-        TPosition():
-                reads(0),
-                readsWithAOrUAtBase10(0),
-                readsWithNonTemplateBase(0)
-        {}
-};
-typedef map< unsigned int, TPosition > TPositionMap;
-typedef map< unsigned int, TPositionMap > TContigMap;
-
+// program entry point
 int main(int argc, char const ** argv)
 {
         // Parse the command line.
@@ -177,9 +145,9 @@ int main(int argc, char const ** argv)
                         {
                                 seqLength = length(record.seq);
                                 if (hasFlagRC(record)) {
-                                        pposition = &(readCountsByPosition[0][record.rID][record.beginPos+seqLength]);
+                                        pposition = &(readCountsByPosition[STRAND_MINUS][record.rID][record.beginPos+seqLength]);
                                 } else {
-                                        pposition = &(readCountsByPosition[1][record.rID][record.beginPos]);
+                                        pposition = &(readCountsByPosition[STRAND_PLUS][record.rID][record.beginPos]);
                                 }
                                 pposition->reads++;
                                 if (seqLength >= 10)
@@ -208,10 +176,10 @@ int main(int argc, char const ** argv)
         int minCount = 0;
         TContigMap::iterator contigOnOppositeStrand;
         TPositionMap::iterator positionOnOppositeStrand;
-        for(TContigMap::iterator contig = readCountsByPosition[1].begin(); contig != readCountsByPosition[1].end(); ++contig)
+        for(TContigMap::iterator contig = readCountsByPosition[STRAND_PLUS].begin(); contig != readCountsByPosition[STRAND_PLUS].end(); ++contig)
         {
-                contigOnOppositeStrand = readCountsByPosition[0].find(contig->first);
-                if (contigOnOppositeStrand != readCountsByPosition[0].end())
+                contigOnOppositeStrand = readCountsByPosition[STRAND_MINUS].find(contig->first);
+                if (contigOnOppositeStrand != readCountsByPosition[STRAND_MINUS].end())
                 {
                         for(TPositionMap::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
                         {
@@ -243,4 +211,5 @@ int main(int argc, char const ** argv)
 
         return 0;
 }
+
 
