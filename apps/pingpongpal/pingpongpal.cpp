@@ -43,15 +43,11 @@ struct TPosition
 {
 	int reads;
 	int readsWithAAtBase10;
-	int readsWithAAtBase10FromEnd;
-	int readsWithUAtBase10;
 	int readsWithUAtBase10FromEnd;
 	int readsWithNonTemplateBase;
 	TPosition():
 		reads(0),
 		readsWithAAtBase10(0),
-		readsWithAAtBase10FromEnd(0),
-		readsWithUAtBase10(0),
 		readsWithUAtBase10FromEnd(0),
 		readsWithNonTemplateBase(0)
 	{}
@@ -139,15 +135,24 @@ void countReadsInBamFile(BamStream &bamFile, TStrands &readCountsUpstream, TStra
 		readRecord(record, bamFile);
 		//todo: handle clipped alignments (maybe with getClippedPos?)
 		//todo: count skipped reads
+		//todo: weighted counting of multimapped reads
 		if (record.beginPos != BamAlignmentRecord::INVALID_POS)
 		{
 			seqLength = length(record.seq);
-			if (hasFlagRC(record)) {
+			if (hasFlagRC(record)) { // read maps to minus strand
 				positionUpstream = &(readCountsUpstream[STRAND_MINUS][record.rID][record.beginPos+seqLength]);
 				positionDownstream = &(readCountsDownstream[STRAND_MINUS][record.rID][record.beginPos]);
-			} else {
+				if ((record.cigar[length(record.cigar)-1].operation == 'S') && (record.cigar[length(record.cigar)-1].count == 1))
+					positionDownstream->readsWithNonTemplateBase++;
+				if ((record.cigar[0].operation == 'S') && (record.cigar[0].count == 1))
+					positionUpstream->readsWithNonTemplateBase++;
+			} else { // read maps to plus strand
 				positionUpstream = &(readCountsUpstream[STRAND_PLUS][record.rID][record.beginPos]);
 				positionDownstream = &(readCountsDownstream[STRAND_PLUS][record.rID][record.beginPos+seqLength]);
+				if ((record.cigar[length(record.cigar)-1].operation == 'S') && (record.cigar[length(record.cigar)-1].count == 1))
+					positionUpstream->readsWithNonTemplateBase++;
+				if ((record.cigar[0].operation == 'S') && (record.cigar[0].count == 1))
+					positionDownstream->readsWithNonTemplateBase++;
 			}
 			positionUpstream->reads++;
 			positionDownstream->reads++;
@@ -158,24 +163,12 @@ void countReadsInBamFile(BamStream &bamFile, TStrands &readCountsUpstream, TStra
 					positionUpstream->readsWithAAtBase10++;
 					positionDownstream->readsWithAAtBase10++;
 				}
-				else if ((record.seq[9] == 'T') || (record.seq[9] == 't'))
-				{
-					positionUpstream->readsWithUAtBase10++;
-					positionDownstream->readsWithUAtBase10++;
-				}
-				if ((record.seq[seqLength-10] == 'A') || (record.seq[seqLength-10] == 'a'))
-				{
-					positionUpstream->readsWithAAtBase10FromEnd++;
-					positionDownstream->readsWithAAtBase10FromEnd++;
-				}
-				else if ((record.seq[seqLength-10] == 'T') || (record.seq[seqLength-10] == 't'))
+				if ((record.seq[seqLength-10] == 'T') || (record.seq[seqLength-10] == 't'))
 				{
 					positionUpstream->readsWithUAtBase10FromEnd++;
 					positionDownstream->readsWithUAtBase10FromEnd++;
 				}
 			}
-			positionUpstream->readsWithNonTemplateBase++;
-			positionDownstream->readsWithNonTemplateBase++;
 		}
 	}
 }
@@ -185,21 +178,6 @@ void findOverlappingReads(TStrands &readCounts, unsigned int upstreamStrand)
 {
 	unsigned int downstreamStrand = (upstreamStrand == STRAND_PLUS) ? STRAND_MINUS : STRAND_PLUS;
 
-	/*for (int strand = 0; strand <= 1; strand++)
-	{
-		for(TStrand::iterator contig = readCountsByPosition[strand].begin(); contig != readCountsByPosition[strand].end(); ++contig)
-		{
-			for(TContig::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
-			{
-				cout << strand << "." << contig->first << "." << position->first << ": " << position->second << endl;
-			}
-		}
-	}*/
-
-	int density[1000];
-	for (int i = 0; i < 1000; i++)
-		density[i] = 0;
-	int minCount = 0;
 	TStrand::iterator contigOnOppositeStrand;
 	TContig::iterator positionOnOppositeStrand;
 	for(TStrand::iterator contig = readCounts[downstreamStrand].begin(); contig != readCounts[downstreamStrand].end(); ++contig)
@@ -212,42 +190,25 @@ void findOverlappingReads(TStrands &readCounts, unsigned int upstreamStrand)
 				positionOnOppositeStrand = contigOnOppositeStrand->second.find(position->first + 10);
 				if (positionOnOppositeStrand != contigOnOppositeStrand->second.end())
 				{
-//				      minCount = (position->second.reads < positionOnOppositeStrand->second.reads) ? position->second.reads : positionOnOppositeStrand->second.reads;
-//				      if (minCount > 999)
-//					      minCount = 999;
-//				      density[minCount]++;
-
-				if ((position->second.reads >= 100) && (positionOnOppositeStrand->second.reads >= 100))
-					cout
-						<< contig->first << "\t"
-						<< position->first << "\t"
-						<< upstreamStrand << "\t"
-						<< position->second.reads << "\t"
-						<< position->second.readsWithAAtBase10 << "\t"
-						<< position->second.readsWithUAtBase10 << "\t"
-						<< position->second.readsWithAAtBase10FromEnd << "\t"
-						<< position->second.readsWithUAtBase10FromEnd << "\t"
-						<< position->second.readsWithNonTemplateBase << "\t"
-						<< downstreamStrand << "\t"
-						<< positionOnOppositeStrand->second.reads << "\t"
-						<< positionOnOppositeStrand->second.readsWithAAtBase10 << "\t"
-						<< positionOnOppositeStrand->second.readsWithUAtBase10 << "\t"
-						<< positionOnOppositeStrand->second.readsWithAAtBase10FromEnd << "\t"
-						<< positionOnOppositeStrand->second.readsWithUAtBase10FromEnd << "\t"
-						<< positionOnOppositeStrand->second.readsWithNonTemplateBase
-						<< endl;
+					if ((position->second.reads >= 100) && (positionOnOppositeStrand->second.reads >= 100))
+						cout
+							<< contig->first << "\t"
+							<< position->first << "\t"
+							<< downstreamStrand << "\t"
+							<< position->second.reads << "\t"
+							<< position->second.readsWithAAtBase10 << "\t"
+							<< position->second.readsWithUAtBase10FromEnd << "\t"
+							<< position->second.readsWithNonTemplateBase << "\t"
+							<< upstreamStrand << "\t"
+							<< positionOnOppositeStrand->second.reads << "\t"
+							<< positionOnOppositeStrand->second.readsWithAAtBase10 << "\t"
+							<< positionOnOppositeStrand->second.readsWithUAtBase10FromEnd << "\t"
+							<< positionOnOppositeStrand->second.readsWithNonTemplateBase
+							<< endl;
 				}
 			}
 		}
 	}
-
-/*      for (int strand = 0; strand <= 1; strand++)
-		for (TStrand::iterator contig = readCountsByPosition[strand].begin(); contig != readCountsByPosition[strand].end(); ++contig)
-			for (TContig::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
-				cout << strand << "." << contig->first << "." << position->first << ": reads " << position->second.reads << ", a/u " << position->second.readsWithAAtBase10 << ", non-template bases " << position->second.readsWithNonTemplateBase << endl;*/
-
-//      for (int i = 0; i < 1000; i++)
-//	      cout << i << "\t" << density[i] << endl;
 }
 
 // program entry point
