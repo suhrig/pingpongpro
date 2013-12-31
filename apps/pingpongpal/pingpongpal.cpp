@@ -123,7 +123,7 @@ void tic()
 //   bamFile: the BAM/SAM file from where to load the reads
 //   readCountsUpstream: stats for positions were reads on the minus strand overlap the upstream (5') ends of reads on the plus strand
 //   readCountsDownstream: stats for positions were reads on the minus strand overlap the downstream (3') ends of reads on the plus strand
-void countReadsInBamFile(BamStream &bamFile, TStrands &readCountsUpstream, TStrands &readCountsDownstream)
+int countReadsInBamFile(BamStream &bamFile, TStrands &readCountsUpstream, TStrands &readCountsDownstream)
 {
 	TPosition *positionUpstream;
 	TPosition *positionDownstream;
@@ -132,11 +132,16 @@ void countReadsInBamFile(BamStream &bamFile, TStrands &readCountsUpstream, TStra
 	BamAlignmentRecord record;
 	while (!atEnd(bamFile))
 	{
-		readRecord(record, bamFile);
+		if (readRecord(record, bamFile) != 0)
+		{
+			cerr << "Failed to read record" << endl;
+			return 1;
+		}
+
 		//todo: handle clipped alignments (maybe with getClippedPos?)
 		//todo: count skipped reads
 		//todo: weighted counting of multimapped reads
-		if (record.beginPos != BamAlignmentRecord::INVALID_POS)
+		if (record.beginPos != BamAlignmentRecord::INVALID_POS && record.beginPos != -1)
 		{
 			seqLength = length(record.seq);
 			if (hasFlagRC(record)) { // read maps to minus strand
@@ -171,10 +176,12 @@ void countReadsInBamFile(BamStream &bamFile, TStrands &readCountsUpstream, TStra
 			}
 		}
 	}
+
+	return 0;
 }
 
 // find those positions on the genome, where reads on opposite strands overlap by 10 nucleotides
-void findOverlappingReads(TStrands &readCounts, unsigned int upstreamStrand)
+void findOverlappingReads(TStrands &readCounts, const unsigned int upstreamStrand, const BamHeader &bamHeader)
 {
 	unsigned int downstreamStrand = (upstreamStrand == STRAND_PLUS) ? STRAND_MINUS : STRAND_PLUS;
 
@@ -190,10 +197,11 @@ void findOverlappingReads(TStrands &readCounts, unsigned int upstreamStrand)
 				positionOnOppositeStrand = contigOnOppositeStrand->second.find(position->first + 10);
 				if (positionOnOppositeStrand != contigOnOppositeStrand->second.end())
 				{
-					if ((position->second.reads >= 100) && (positionOnOppositeStrand->second.reads >= 100))
+//					if ((position->second.reads >= 100) && (positionOnOppositeStrand->second.reads >= 100))
+						//todo: translate contig ID to rname
 						cout
-							<< contig->first << "\t"
-							<< position->first << "\t"
+							<< bamHeader.sequenceInfos[contig->first].i1 << "\t"
+							<< (position->first+1) << "\t"
 							<< downstreamStrand << "\t"
 							<< position->second.reads << "\t"
 							<< position->second.readsWithAAtBase10 << "\t"
@@ -226,26 +234,35 @@ int main(int argc, char const ** argv)
 	TStrands readCountsUpstream; // stats about positions where reads on the minus strand overlap with the upstream ends of reads on the plus strand
 	TStrands readCountsDownstream; // stats about positions where reads on the minus strand overlap with the downstream ends of reads on the plus strand
 
+	BamHeader bamHeader;
+
 	// read all BAM/SAM files
 	for(TInputFiles::iterator inputFile = options.inputFiles.begin(); inputFile != options.inputFiles.end(); ++inputFile)
 	{
 		// open SAM/BAM file
 		BamStream bamFile(toCString(*inputFile));
+		// todo: check if bam header is present
 		if (!isGood(bamFile))
 		{
 			cerr << "Failed to open file: " << *inputFile << endl;
 			return 1;
 		}
+
+		// remember BAM header for mapping of contig IDs to human-readable names
+		bamHeader = bamFile.header;
+
 		// for every position in the genome, count the number of reads that start at a given position
-		countReadsInBamFile(bamFile, readCountsUpstream, readCountsDownstream);
+		if (countReadsInBamFile(bamFile, readCountsUpstream, readCountsDownstream) != 0)
+			return 1;
+
 		// close SAM/BAM file
 		close(bamFile);
 	}
 
 	// find positions where reads on the minus strand overlap with the upstream ends of reads on the plus strand
-	findOverlappingReads(readCountsUpstream, STRAND_MINUS);
+	findOverlappingReads(readCountsUpstream, STRAND_MINUS, bamHeader);
 	// find positions where reads on the minus strand overlap with the downstream ends of reads on the plus strand
-	findOverlappingReads(readCountsDownstream, STRAND_PLUS);
+	findOverlappingReads(readCountsDownstream, STRAND_PLUS, bamHeader);
 
 	return 0;
 }
