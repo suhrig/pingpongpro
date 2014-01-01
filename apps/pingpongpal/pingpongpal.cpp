@@ -59,6 +59,9 @@ typedef map< unsigned int, TPosition > TContig;
 typedef map< unsigned int, TContig > TStrand;
 typedef TStrand TStrands[2];
 
+typedef seqan::StringSet<seqan::CharString> TNameStore;
+typedef Iterator<TNameStore>::Type TNameStoreIterator;
+
 // ==========================================================================
 // Functions
 // ==========================================================================
@@ -181,7 +184,7 @@ int countReadsInBamFile(BamStream &bamFile, TStrands &readCountsUpstream, TStran
 }
 
 // find those positions on the genome, where reads on opposite strands overlap by 10 nucleotides
-void findOverlappingReads(TStrands &readCounts, const unsigned int upstreamStrand, const BamHeader &bamHeader)
+void findOverlappingReads(TStrands &readCounts, const unsigned int upstreamStrand, const TNameStore &bamNameStore)
 {
 	unsigned int downstreamStrand = (upstreamStrand == STRAND_PLUS) ? STRAND_MINUS : STRAND_PLUS;
 
@@ -198,9 +201,8 @@ void findOverlappingReads(TStrands &readCounts, const unsigned int upstreamStran
 				if (positionOnOppositeStrand != contigOnOppositeStrand->second.end())
 				{
 //					if ((position->second.reads >= 100) && (positionOnOppositeStrand->second.reads >= 100))
-						//todo: translate contig ID to rname
 						cout
-							<< bamHeader.sequenceInfos[contig->first].i1 << "\t"
+							<< bamNameStore[contig->first] << "\t"
 							<< (position->first+1) << "\t"
 							<< downstreamStrand << "\t"
 							<< position->second.reads << "\t"
@@ -234,7 +236,7 @@ int main(int argc, char const ** argv)
 	TStrands readCountsUpstream; // stats about positions where reads on the minus strand overlap with the upstream ends of reads on the plus strand
 	TStrands readCountsDownstream; // stats about positions where reads on the minus strand overlap with the downstream ends of reads on the plus strand
 
-	BamHeader bamHeader;
+	TNameStore bamNameStore;
 
 	// read all BAM/SAM files
 	for(TInputFiles::iterator inputFile = options.inputFiles.begin(); inputFile != options.inputFiles.end(); ++inputFile)
@@ -244,25 +246,50 @@ int main(int argc, char const ** argv)
 		// todo: check if bam header is present
 		if (!isGood(bamFile))
 		{
-			cerr << "Failed to open file: " << *inputFile << endl;
+			cerr << "Failed to open input file: " << *inputFile << endl;
 			return 1;
 		}
-
-		// remember BAM header for mapping of contig IDs to human-readable names
-		bamHeader = bamFile.header;
 
 		// for every position in the genome, count the number of reads that start at a given position
 		if (countReadsInBamFile(bamFile, readCountsUpstream, readCountsDownstream) != 0)
 			return 1;
+
+		// remember @SQ header lines from BAM file for mapping of contig IDs to human-readable names
+		if (length(bamNameStore) == 0)
+		{
+			bamNameStore = nameStore(bamFile.bamIOContext);
+		}
+		else
+		{
+			// if multiple BAM files are given, check if headers are identical
+			TNameStore tempBamNameStore = nameStore(bamFile.bamIOContext);
+			bool nameStoresDiffer = false;
+			TNameStoreIterator bamNameStoreIterator = begin(bamNameStore);
+			TNameStoreIterator tempBamNameStoreIterator = begin(tempBamNameStore);
+			while ((bamNameStoreIterator != end(bamNameStore)) && (tempBamNameStoreIterator != end(tempBamNameStore)) && !nameStoresDiffer)
+			{
+				cout << "bamNameStore: " << value(bamNameStoreIterator) << endl;
+				cout << "tempBamNameStore: " << value(tempBamNameStoreIterator) << endl;
+				if (value(bamNameStoreIterator) != value(tempBamNameStoreIterator))
+					nameStoresDiffer = true;
+				++bamNameStoreIterator;
+				++tempBamNameStoreIterator;
+			}
+			if (nameStoresDiffer || (length(bamNameStore) != length(tempBamNameStore)))
+			{
+				cerr << "@SQ header lines of '" << *inputFile << "' differ from those of previous input files" << endl;
+				return 1;
+			}
+		}
 
 		// close SAM/BAM file
 		close(bamFile);
 	}
 
 	// find positions where reads on the minus strand overlap with the upstream ends of reads on the plus strand
-	findOverlappingReads(readCountsUpstream, STRAND_MINUS, bamHeader);
+	findOverlappingReads(readCountsUpstream, STRAND_MINUS, bamNameStore);
 	// find positions where reads on the minus strand overlap with the downstream ends of reads on the plus strand
-	findOverlappingReads(readCountsDownstream, STRAND_PLUS, bamHeader);
+	findOverlappingReads(readCountsDownstream, STRAND_PLUS, bamNameStore);
 
 	return 0;
 }
