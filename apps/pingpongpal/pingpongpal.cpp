@@ -39,13 +39,13 @@ const unsigned int STRAND_MINUS = 1;
 //  - reads: the number of reads which begin at this position
 //  - readsWithAAtBase10: how many of these reads have an Adenine or a Uracil at base 10 (which is typical for piRNAs)
 //  - readsWithNonTemplateBase: how many of these reads have terminal base which is different from the reference genome (also typical for piRNAs)
-struct TPosition
+struct TCountsPosition
 {
 	int reads;
 	int readsWithAAtBase10;
 	int readsWithUAtBase10FromEnd;
 	int readsWithNonTemplateBase;
-	TPosition():
+	TCountsPosition():
 		reads(0),
 		readsWithAAtBase10(0),
 		readsWithUAtBase10FromEnd(0),
@@ -55,9 +55,9 @@ struct TPosition
 
 // The following types define nested arrays to store the above stats for every position in the genome.
 // The stats are grouped by strand and contig/chromosome.
-typedef map< unsigned int, TPosition > TContig;
-typedef map< unsigned int, TContig > TStrand;
-typedef TStrand TStrands[2];
+typedef map< unsigned int, TCountsPosition > TCountsContig;
+typedef map< unsigned int, TCountsContig > TCountsStrand;
+typedef TCountsStrand TCountsGenome[2];
 
 // types to store @SQ header lines of BAM/SAM files
 typedef seqan::StringSet<seqan::CharString> TNameStore;
@@ -70,16 +70,18 @@ typedef Iterator<TNameStore>::Type TNameStoreIterator;
 // function to parse command-line arguments
 ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char const ** argv)
 {
-	// Setup ArgumentParser.
 	ArgumentParser parser("pingpongpal");
-	// Set short description, version, and date.
-	setShortDescription(parser, "Put a Short Description Here");
-	setVersion(parser, "0.1");
-	setDate(parser, "July 2012");
 
-	// Define usage line and long description.
+	// define usage and description
 	addUsageLine(parser, "[\\fIOPTIONS\\fP] \"\\fITEXT\\fP\"");
+	setShortDescription(parser, "Find ping-pong signatures with your ping-pong pal.");
+	// todo: define long description
 	addDescription(parser, "This is the application skelleton and you should modify this string.");
+	setVersion(parser, "0.1");
+	setDate(parser, "Jan 2014");
+	// todo: Add Examples Section.
+	addTextSection(parser, "Examples");
+	addListItem(parser, "\\fBpingpongpal\\fP \\fB-v\\fP \\fItext\\fP", "Call with \\fITEXT\\fP set to \"text\" with verbose output.");
 
 	addOption(parser, ArgParseOption("i", "input", "Path to the input file(s)", ArgParseArgument::INPUTFILE, "IN", true));
 	vector< string > acceptedInputFormats;
@@ -87,16 +89,12 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	acceptedInputFormats.push_back(".bam");
 	setValidValues(parser, "input", acceptedInputFormats);
 
-	// Add Examples Section.
-	addTextSection(parser, "Examples");
-	addListItem(parser, "\\fBpingpongpal\\fP \\fB-v\\fP \\fItext\\fP", "Call with \\fITEXT\\fP set to \"text\" with verbose output.");
-
-	// Parse command line.
+	// parse command line
 	ArgumentParser::ParseResult parserResult = parse(parser, argc, argv);
-
 	if (parserResult != ArgumentParser::PARSE_OK)
 		return parserResult;
 
+	// extract options, if parsing was successful
 	options.inputFiles.resize(getOptionValueCount(parser, "input"));
 	for (vector< string >::size_type i = 0; i < options.inputFiles.size(); i++)
 		getOptionValue(options.inputFiles[i], parser, "input", i);
@@ -127,10 +125,10 @@ void tic()
 //   bamFile: the BAM/SAM file from where to load the reads
 //   readCountsUpstream: stats for positions were reads on the minus strand overlap the upstream (5') ends of reads on the plus strand
 //   readCountsDownstream: stats for positions were reads on the minus strand overlap the downstream (3') ends of reads on the plus strand
-int countReadsInBamFile(BamStream &bamFile, TStrands &readCountsUpstream, TStrands &readCountsDownstream)
+int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCountsUpstream, TCountsGenome &readCountsDownstream)
 {
-	TPosition *positionUpstream;
-	TPosition *positionDownstream;
+	TCountsPosition *positionUpstream;
+	TCountsPosition *positionDownstream;
 
 	size_t seqLength;
 	BamAlignmentRecord record;
@@ -189,18 +187,18 @@ int countReadsInBamFile(BamStream &bamFile, TStrands &readCountsUpstream, TStran
 }
 
 // find those positions on the genome, where reads on opposite strands overlap by 10 nucleotides
-void findOverlappingReads(TStrands &readCounts, const unsigned int upstreamStrand, const TNameStore &bamNameStore)
+void findOverlappingReads(TCountsGenome &readCounts, const unsigned int upstreamStrand, const TNameStore &bamNameStore)
 {
 	unsigned int downstreamStrand = (upstreamStrand == STRAND_PLUS) ? STRAND_MINUS : STRAND_PLUS;
 
-	TStrand::iterator contigOnOppositeStrand;
-	TContig::iterator positionOnOppositeStrand;
-	for(TStrand::iterator contig = readCounts[downstreamStrand].begin(); contig != readCounts[downstreamStrand].end(); ++contig)
+	TCountsStrand::iterator contigOnOppositeStrand;
+	TCountsContig::iterator positionOnOppositeStrand;
+	for(TCountsStrand::iterator contig = readCounts[downstreamStrand].begin(); contig != readCounts[downstreamStrand].end(); ++contig)
 	{
 		contigOnOppositeStrand = readCounts[upstreamStrand].find(contig->first);
 		if (contigOnOppositeStrand != readCounts[upstreamStrand].end())
 		{
-			for(TContig::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
+			for(TCountsContig::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
 			{
 				positionOnOppositeStrand = contigOnOppositeStrand->second.find(position->first + 10);
 				if (positionOnOppositeStrand != contigOnOppositeStrand->second.end())
@@ -238,8 +236,8 @@ int main(int argc, char const ** argv)
 	if (options.inputFiles.size() == 0)
 		options.inputFiles.push_back("/dev/stdin");
 
-	TStrands readCountsUpstream; // stats about positions where reads on the minus strand overlap with the upstream ends of reads on the plus strand
-	TStrands readCountsDownstream; // stats about positions where reads on the minus strand overlap with the downstream ends of reads on the plus strand
+	TCountsGenome readCountsUpstream; // stats about positions where reads on the minus strand overlap with the upstream ends of reads on the plus strand
+	TCountsGenome readCountsDownstream; // stats about positions where reads on the minus strand overlap with the downstream ends of reads on the plus strand
 
 	TNameStore bamNameStore;
 
