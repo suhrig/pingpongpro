@@ -130,7 +130,7 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCountsUpstream, T
 	TCountsPosition *positionUpstream;
 	TCountsPosition *positionDownstream;
 
-	size_t seqLength;
+	size_t alignmentLength;
 	BamAlignmentRecord record;
 	while (!atEnd(bamFile))
 	{
@@ -140,41 +140,47 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCountsUpstream, T
 			return 1;
 		}
 
-		//todo: handle clipped alignments (maybe with getClippedPos?)
-		//todo: count skipped reads
 		//todo: weighted counting of multimapped reads
 		if (record.beginPos != BamAlignmentRecord::INVALID_POS && record.beginPos != -1)
 		{
-			seqLength = length(record.seq);
-			if (record.cigar[length(record.cigar)-1].operation == 'S')
-				seqLength -= record.cigar[length(record.cigar)-1].count;
-			if (record.cigar[0].operation == 'S')
-				seqLength -= record.cigar[0].count;
-			if (hasFlagRC(record)) { // read maps to minus strand
-				positionUpstream = &(readCountsUpstream[STRAND_MINUS][record.rID][record.beginPos+seqLength]);
+			// calculate alignment length using CIGAR string, i.e., distance from first matching base on the reference to the last matching base on the reference
+			alignmentLength = 0;
+			for (unsigned int cigarIndex = 0; cigarIndex < length(record.cigar); ++cigarIndex)
+				if ((record.cigar[cigarIndex].operation == 'M') || (record.cigar[cigarIndex].operation == 'N') || (record.cigar[cigarIndex].operation == 'D') || (record.cigar[cigarIndex].operation == '=') || (record.cigar[cigarIndex].operation == 'X'))
+					alignmentLength += record.cigar[cigarIndex].count;
+
+			if (hasFlagRC(record)) // read maps to minus strand
+			{
+				positionUpstream = &(readCountsUpstream[STRAND_MINUS][record.rID][record.beginPos+alignmentLength]);
 				positionDownstream = &(readCountsDownstream[STRAND_MINUS][record.rID][record.beginPos]);
 				if ((record.cigar[length(record.cigar)-1].operation == 'S') && (record.cigar[length(record.cigar)-1].count == 1))
 					positionDownstream->readsWithNonTemplateBase++;
 				if ((record.cigar[0].operation == 'S') && (record.cigar[0].count == 1))
 					positionUpstream->readsWithNonTemplateBase++;
-			} else { // read maps to plus strand
+			}
+			else // read maps to plus strand
+			{
 				positionUpstream = &(readCountsUpstream[STRAND_PLUS][record.rID][record.beginPos]);
-				positionDownstream = &(readCountsDownstream[STRAND_PLUS][record.rID][record.beginPos+seqLength]);
+				positionDownstream = &(readCountsDownstream[STRAND_PLUS][record.rID][record.beginPos+alignmentLength]);
 				if ((record.cigar[length(record.cigar)-1].operation == 'S') && (record.cigar[length(record.cigar)-1].count == 1))
 					positionUpstream->readsWithNonTemplateBase++;
 				if ((record.cigar[0].operation == 'S') && (record.cigar[0].count == 1))
 					positionDownstream->readsWithNonTemplateBase++;
 			}
+
+			// increase read counters for the given position on the genome
 			positionUpstream->reads++;
 			positionDownstream->reads++;
-			if (seqLength >= 10)
+
+			// check if 10th base is an Adenine or if the 10th base from the end of the read is a Uracil
+			if (alignmentLength >= 10)
 			{
 				if ((record.seq[9] == 'A') || (record.seq[9] == 'a'))
 				{
 					positionUpstream->readsWithAAtBase10++;
 					positionDownstream->readsWithAAtBase10++;
 				}
-				if ((record.seq[seqLength-10] == 'T') || (record.seq[seqLength-10] == 't'))
+				if ((record.seq[length(record.seq)-10] == 'T') || (record.seq[length(record.seq)-10] == 't'))
 				{
 					positionUpstream->readsWithUAtBase10FromEnd++;
 					positionDownstream->readsWithUAtBase10FromEnd++;
@@ -203,7 +209,7 @@ void findOverlappingReads(TCountsGenome &readCounts, const unsigned int upstream
 				positionOnOppositeStrand = contigOnOppositeStrand->second.find(position->first + 10);
 				if (positionOnOppositeStrand != contigOnOppositeStrand->second.end())
 				{
-					if ((position->second.reads >= 100) && (positionOnOppositeStrand->second.reads >= 100))
+//					if ((position->second.reads >= 100) && (positionOnOppositeStrand->second.reads >= 100))
 						cout
 							<< bamNameStore[contig->first] << "\t"
 							<< (position->first+1) << "\t"
