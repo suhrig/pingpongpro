@@ -41,10 +41,10 @@ const unsigned int STRAND_MINUS = 1;
 //  - readsWithNonTemplateBase: how many of these reads have terminal base which is different from the reference genome (also typical for piRNAs)
 struct TCountsPosition
 {
-	int reads;
-	int readsWithAAtBase10;
-	int readsWithUAtBase10FromEnd;
-	int readsWithNonTemplateBase;
+	unsigned int reads;
+	unsigned int readsWithAAtBase10;
+	unsigned int readsWithUAtBase10FromEnd;
+	unsigned int readsWithNonTemplateBase;
 	TCountsPosition():
 		reads(0),
 		readsWithAAtBase10(0),
@@ -130,7 +130,6 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCountsUpstream, T
 	TCountsPosition *positionUpstream;
 	TCountsPosition *positionDownstream;
 
-	size_t alignmentLength;
 	BamAlignmentRecord record;
 	while (!atEnd(bamFile))
 	{
@@ -144,7 +143,7 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCountsUpstream, T
 		if (record.beginPos != BamAlignmentRecord::INVALID_POS && record.beginPos != -1)
 		{
 			// calculate alignment length using CIGAR string, i.e., distance from first matching base on the reference to the last matching base on the reference
-			alignmentLength = 0;
+			size_t alignmentLength = 0;
 			for (unsigned int cigarIndex = 0; cigarIndex < length(record.cigar); ++cigarIndex)
 				if ((record.cigar[cigarIndex].operation == 'M') || (record.cigar[cigarIndex].operation == 'N') || (record.cigar[cigarIndex].operation == 'D') || (record.cigar[cigarIndex].operation == '=') || (record.cigar[cigarIndex].operation == 'X'))
 					alignmentLength += record.cigar[cigarIndex].count;
@@ -192,24 +191,24 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCountsUpstream, T
 	return 0;
 }
 
-// find those positions on the genome, where reads on opposite strands overlap by 10 nucleotides
-void findOverlappingReads(TCountsGenome &readCounts, const unsigned int upstreamStrand, const TNameStore &bamNameStore)
+// find those positions on the genome where reads on opposite strands overlap by 10 nucleotides
+void findOverlappingReads(TCountsGenome &readCounts, const unsigned int upstreamStrand, const TNameStore &bamNameStore, unsigned int coverage)
 {
+	// set downstream strand to the opposite of upstream strand
 	unsigned int downstreamStrand = (upstreamStrand == STRAND_PLUS) ? STRAND_MINUS : STRAND_PLUS;
 
-	TCountsStrand::iterator contigOnOppositeStrand;
-	TCountsContig::iterator positionOnOppositeStrand;
-	for(TCountsStrand::iterator contig = readCounts[downstreamStrand].begin(); contig != readCounts[downstreamStrand].end(); ++contig)
+	// iterate through all strands, contigs and positions to find those positions where more than <coverage> reads on both strands overlap by 10 nucleotides
+	for (TCountsStrand::iterator contig = readCounts[downstreamStrand].begin(); contig != readCounts[downstreamStrand].end(); ++contig)
 	{
-		contigOnOppositeStrand = readCounts[upstreamStrand].find(contig->first);
+		TCountsStrand::iterator contigOnOppositeStrand = readCounts[upstreamStrand].find(contig->first);
 		if (contigOnOppositeStrand != readCounts[upstreamStrand].end())
 		{
-			for(TCountsContig::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
+			for (TCountsContig::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
 			{
-				positionOnOppositeStrand = contigOnOppositeStrand->second.find(position->first + 10);
+				TCountsContig::iterator positionOnOppositeStrand = contigOnOppositeStrand->second.find(position->first + 10);
 				if (positionOnOppositeStrand != contigOnOppositeStrand->second.end())
 				{
-//					if ((position->second.reads >= 100) && (positionOnOppositeStrand->second.reads >= 100))
+					if ((position->second.reads >= coverage) && (positionOnOppositeStrand->second.reads >= coverage))
 						cout
 							<< bamNameStore[contig->first] << "\t"
 							<< (position->first+1) << "\t"
@@ -228,6 +227,63 @@ void findOverlappingReads(TCountsGenome &readCounts, const unsigned int upstream
 			}
 		}
 	}
+}
+
+// find those positions on the genome where reads on opposite strands overlap by 10 nucleotides
+void aggregateOverlappingReadsByCoverage(TCountsGenome &readCounts, const unsigned int upstreamStrand)
+{
+	// set downstream strand to the opposite of upstream strand
+	unsigned int downstreamStrand = (upstreamStrand == STRAND_PLUS) ? STRAND_MINUS : STRAND_PLUS;
+
+	unsigned int coverage = 1;
+	
+	TCountsPosition aggregatedCounts[2];
+	do
+	{
+		// reset counters
+		aggregatedCounts[upstreamStrand] = aggregatedCounts[downstreamStrand] = TCountsPosition();
+
+		// iterate through all strands, contigs and positions to find those positions where more than <coverage> reads on opposite strands overlap by 10 nucleotides
+		for (TCountsStrand::iterator contig = readCounts[downstreamStrand].begin(); contig != readCounts[downstreamStrand].end(); ++contig)
+		{
+			TCountsStrand::iterator contigOnOppositeStrand = readCounts[upstreamStrand].find(contig->first);
+			if (contigOnOppositeStrand != readCounts[upstreamStrand].end())
+			{
+				for (TCountsContig::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
+				{
+					TCountsContig::iterator positionOnOppositeStrand = contigOnOppositeStrand->second.find(position->first + 10);
+					if (positionOnOppositeStrand != contigOnOppositeStrand->second.end())
+					{
+						if ((position->second.reads >= coverage) && (positionOnOppositeStrand->second.reads >= coverage))
+						{
+							aggregatedCounts[downstreamStrand].reads += position->second.reads;
+							aggregatedCounts[downstreamStrand].readsWithAAtBase10 += position->second.readsWithAAtBase10;
+							aggregatedCounts[downstreamStrand].readsWithUAtBase10FromEnd += position->second.readsWithUAtBase10FromEnd;
+							aggregatedCounts[downstreamStrand].readsWithNonTemplateBase += position->second.readsWithNonTemplateBase;
+							aggregatedCounts[upstreamStrand].reads += positionOnOppositeStrand->second.reads;
+							aggregatedCounts[upstreamStrand].readsWithAAtBase10 += positionOnOppositeStrand->second.readsWithAAtBase10;
+							aggregatedCounts[upstreamStrand].readsWithUAtBase10FromEnd += positionOnOppositeStrand->second.readsWithUAtBase10FromEnd;
+							aggregatedCounts[upstreamStrand].readsWithNonTemplateBase += positionOnOppositeStrand->second.readsWithNonTemplateBase;
+						}
+					}
+				}
+			}
+		}
+		cout
+			<< coverage << "\t"
+			<< downstreamStrand << "\t"
+			<< aggregatedCounts[downstreamStrand].reads << "\t"
+			<< aggregatedCounts[downstreamStrand].readsWithAAtBase10 << "\t"
+			<< aggregatedCounts[downstreamStrand].readsWithUAtBase10FromEnd << "\t"
+			<< aggregatedCounts[downstreamStrand].readsWithNonTemplateBase << "\t"
+			<< upstreamStrand << "\t"
+			<< aggregatedCounts[upstreamStrand].reads << "\t"
+			<< aggregatedCounts[upstreamStrand].readsWithAAtBase10 << "\t"
+			<< aggregatedCounts[upstreamStrand].readsWithUAtBase10FromEnd << "\t"
+			<< aggregatedCounts[upstreamStrand].readsWithNonTemplateBase
+			<< endl;
+		coverage++;
+	} while (aggregatedCounts[downstreamStrand].reads > 0);
 }
 
 // program entry point
@@ -293,9 +349,12 @@ int main(int argc, char const ** argv)
 	}
 
 	// find positions where reads on the minus strand overlap with the upstream ends of reads on the plus strand
-	findOverlappingReads(readCountsUpstream, STRAND_MINUS, bamNameStore);
+//	findOverlappingReads(readCountsUpstream, STRAND_MINUS, bamNameStore, 100);
 	// find positions where reads on the minus strand overlap with the downstream ends of reads on the plus strand
-	findOverlappingReads(readCountsDownstream, STRAND_PLUS, bamNameStore);
+//	findOverlappingReads(readCountsDownstream, STRAND_PLUS, bamNameStore, 100);
+
+	aggregateOverlappingReadsByCoverage(readCountsUpstream, STRAND_MINUS);
+	aggregateOverlappingReadsByCoverage(readCountsDownstream, STRAND_PLUS);
 
 	return 0;
 }
