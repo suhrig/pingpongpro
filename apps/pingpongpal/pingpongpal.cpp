@@ -59,6 +59,7 @@ typedef map< unsigned int, TPosition > TContig;
 typedef map< unsigned int, TContig > TStrand;
 typedef TStrand TStrands[2];
 
+// types to store @SQ header lines of BAM/SAM files
 typedef seqan::StringSet<seqan::CharString> TNameStore;
 typedef Iterator<TNameStore>::Type TNameStoreIterator;
 
@@ -147,6 +148,10 @@ int countReadsInBamFile(BamStream &bamFile, TStrands &readCountsUpstream, TStran
 		if (record.beginPos != BamAlignmentRecord::INVALID_POS && record.beginPos != -1)
 		{
 			seqLength = length(record.seq);
+			if (record.cigar[length(record.cigar)-1].operation == 'S')
+				seqLength -= record.cigar[length(record.cigar)-1].count;
+			if (record.cigar[0].operation == 'S')
+				seqLength -= record.cigar[0].count;
 			if (hasFlagRC(record)) { // read maps to minus strand
 				positionUpstream = &(readCountsUpstream[STRAND_MINUS][record.rID][record.beginPos+seqLength]);
 				positionDownstream = &(readCountsDownstream[STRAND_MINUS][record.rID][record.beginPos]);
@@ -200,7 +205,7 @@ void findOverlappingReads(TStrands &readCounts, const unsigned int upstreamStran
 				positionOnOppositeStrand = contigOnOppositeStrand->second.find(position->first + 10);
 				if (positionOnOppositeStrand != contigOnOppositeStrand->second.end())
 				{
-//					if ((position->second.reads >= 100) && (positionOnOppositeStrand->second.reads >= 100))
+					if ((position->second.reads >= 100) && (positionOnOppositeStrand->second.reads >= 100))
 						cout
 							<< bamNameStore[contig->first] << "\t"
 							<< (position->first+1) << "\t"
@@ -243,7 +248,6 @@ int main(int argc, char const ** argv)
 	{
 		// open SAM/BAM file
 		BamStream bamFile(toCString(*inputFile));
-		// todo: check if bam header is present
 		if (!isGood(bamFile))
 		{
 			cerr << "Failed to open input file: " << *inputFile << endl;
@@ -268,8 +272,6 @@ int main(int argc, char const ** argv)
 			TNameStoreIterator tempBamNameStoreIterator = begin(tempBamNameStore);
 			while ((bamNameStoreIterator != end(bamNameStore)) && (tempBamNameStoreIterator != end(tempBamNameStore)) && !nameStoresDiffer)
 			{
-				cout << "bamNameStore: " << value(bamNameStoreIterator) << endl;
-				cout << "tempBamNameStore: " << value(tempBamNameStoreIterator) << endl;
 				if (value(bamNameStoreIterator) != value(tempBamNameStoreIterator))
 					nameStoresDiffer = true;
 				++bamNameStoreIterator;
