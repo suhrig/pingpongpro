@@ -1,5 +1,5 @@
 // ==========================================================================
-//				pingpongpal
+//				pingpongpro
 // ==========================================================================
 // todo: copyright
 
@@ -73,7 +73,7 @@ typedef Iterator<TNameStore>::Type TNameStoreIterator;
 // function to parse command-line arguments
 ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char const ** argv)
 {
-	ArgumentParser parser("pingpongpal");
+	ArgumentParser parser("pingpongpro");
 
 	// define usage and description
 	addUsageLine(parser, "[\\fIOPTIONS\\fP] \"\\fITEXT\\fP\"");
@@ -84,7 +84,7 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	setDate(parser, "Jan 2014");
 	// todo: Add Examples Section.
 	addTextSection(parser, "Examples");
-	addListItem(parser, "\\fBpingpongpal\\fP \\fB-v\\fP \\fItext\\fP", "Call with \\fITEXT\\fP set to \"text\" with verbose output.");
+	addListItem(parser, "\\fBpingpongpro\\fP \\fB-v\\fP \\fItext\\fP", "Call with \\fITEXT\\fP set to \"text\" with verbose output.");
 
 	addOption(parser, ArgParseOption("i", "input", "Input file(s) in SAM/BAM format", ArgParseArgument::INPUTFILE, "PATH", true));
 	vector< string > acceptedInputFormats;
@@ -398,9 +398,11 @@ int main(int argc, char const ** argv)
 		return 1;
 	}
 	// find positions where reads on the minus strand overlap with the upstream ends of reads on the plus strand
-	findOverlappingReads(bedGraphFile, readCountsUpstream, STRAND_MINUS, bamNameStore, 1);
+	if (findOverlappingReads(bedGraphFile, readCountsUpstream, STRAND_MINUS, bamNameStore, 100) != 0)
+		return 1;
 	// find positions where reads on the minus strand overlap with the downstream ends of reads on the plus strand
-	findOverlappingReads(bedGraphFile, readCountsDownstream, STRAND_PLUS, bamNameStore, 1);
+	if (findOverlappingReads(bedGraphFile, readCountsDownstream, STRAND_PLUS, bamNameStore, 100) != 0)
+		return 1;
 	bedGraphFile.close();
 
 //	aggregateOverlappingReadsByCoverage(readCountsUpstream, STRAND_MINUS);
