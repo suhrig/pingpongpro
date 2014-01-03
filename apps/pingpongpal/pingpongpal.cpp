@@ -6,11 +6,13 @@
 #include <seqan/basic.h>
 #include <seqan/sequence.h>
 #include <seqan/bam_io.h>
+#include <seqan/bed_io.h>
 #include <seqan/arg_parse.h>
 
 #include <map>
 #include <vector>
 #include <ctime>
+#include <fstream>
 
 using namespace std;
 using namespace seqan;
@@ -26,6 +28,7 @@ typedef vector<CharString> TInputFiles;
 struct AppOptions
 {
 	TInputFiles inputFiles;
+	CharString outputBedGraph;
 
 	AppOptions()
 	{}
@@ -83,11 +86,14 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	addTextSection(parser, "Examples");
 	addListItem(parser, "\\fBpingpongpal\\fP \\fB-v\\fP \\fItext\\fP", "Call with \\fITEXT\\fP set to \"text\" with verbose output.");
 
-	addOption(parser, ArgParseOption("i", "input", "Path to the input file(s)", ArgParseArgument::INPUTFILE, "IN", true));
+	addOption(parser, ArgParseOption("i", "input", "Input file(s) in SAM/BAM format", ArgParseArgument::INPUTFILE, "PATH", true));
 	vector< string > acceptedInputFormats;
 	acceptedInputFormats.push_back(".sam");
 	acceptedInputFormats.push_back(".bam");
 	setValidValues(parser, "input", acceptedInputFormats);
+
+	addOption(parser, ArgParseOption("b", "output-bedgraph", "Output loci with ping-pong signature in bedGraph format to specified file", ArgParseArgument::OUTPUTFILE, "PATH", true));
+	setRequired(parser, "output-bedgraph");
 
 	// parse command line
 	ArgumentParser::ParseResult parserResult = parse(parser, argc, argv);
@@ -98,6 +104,7 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	options.inputFiles.resize(getOptionValueCount(parser, "input"));
 	for (vector< string >::size_type i = 0; i < options.inputFiles.size(); i++)
 		getOptionValue(options.inputFiles[i], parser, "input", i);
+	getOptionValue(options.outputBedGraph, parser, "output-bedgraph");
 
 	return parserResult;
 }
@@ -192,8 +199,9 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCountsUpstream, T
 }
 
 // find those positions on the genome where reads on opposite strands overlap by 10 nucleotides
-void findOverlappingReads(TCountsGenome &readCounts, const unsigned int upstreamStrand, const TNameStore &bamNameStore, unsigned int coverage)
+void findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, const unsigned int upstreamStrand, const TNameStore &bamNameStore, unsigned int coverage)
 {
+
 	// set downstream strand to the opposite of upstream strand
 	unsigned int downstreamStrand = (upstreamStrand == STRAND_PLUS) ? STRAND_MINUS : STRAND_PLUS;
 
@@ -209,7 +217,8 @@ void findOverlappingReads(TCountsGenome &readCounts, const unsigned int upstream
 				if (positionOnOppositeStrand != contigOnOppositeStrand->second.end())
 				{
 					if ((position->second.reads >= coverage) && (positionOnOppositeStrand->second.reads >= coverage))
-						cout
+					{
+						/*cout
 							<< bamNameStore[contig->first] << "\t"
 							<< (position->first+1) << "\t"
 							<< downstreamStrand << "\t"
@@ -222,7 +231,13 @@ void findOverlappingReads(TCountsGenome &readCounts, const unsigned int upstream
 							<< positionOnOppositeStrand->second.readsWithAAtBase10 << "\t"
 							<< positionOnOppositeStrand->second.readsWithUAtBase10FromEnd << "\t"
 							<< positionOnOppositeStrand->second.readsWithNonTemplateBase
-							<< endl;
+							<< endl;*/
+						bedGraphFile
+							<< bamNameStore[contig->first] << " "
+							<< position->first << " "
+							<< (position->first+10) << " "
+							<< (position->second.reads+positionOnOppositeStrand->second.reads)/2 << endl;
+					}
 				}
 			}
 		}
@@ -269,6 +284,7 @@ void aggregateOverlappingReadsByCoverage(TCountsGenome &readCounts, const unsign
 				}
 			}
 		}
+
 		cout
 			<< coverage << "\t"
 			<< downstreamStrand << "\t"
@@ -348,13 +364,17 @@ int main(int argc, char const ** argv)
 		close(bamFile);
 	}
 
+	ofstream bedGraphFile;
+	bedGraphFile.open(toCString(options.outputBedGraph));
+	bedGraphFile << "track type=bedGraph name=\"BedGraph Format\" description=\"BedGraph format\" visibility=full color=200,100,0 altColor=0,100,200 priority=20" << endl;
 	// find positions where reads on the minus strand overlap with the upstream ends of reads on the plus strand
-//	findOverlappingReads(readCountsUpstream, STRAND_MINUS, bamNameStore, 100);
+	findOverlappingReads(bedGraphFile, readCountsUpstream, STRAND_MINUS, bamNameStore, 100);
 	// find positions where reads on the minus strand overlap with the downstream ends of reads on the plus strand
-//	findOverlappingReads(readCountsDownstream, STRAND_PLUS, bamNameStore, 100);
+	findOverlappingReads(bedGraphFile, readCountsDownstream, STRAND_PLUS, bamNameStore, 100);
+	bedGraphFile.close();
 
-	aggregateOverlappingReadsByCoverage(readCountsUpstream, STRAND_MINUS);
-	aggregateOverlappingReadsByCoverage(readCountsDownstream, STRAND_PLUS);
+//	aggregateOverlappingReadsByCoverage(readCountsUpstream, STRAND_MINUS);
+//	aggregateOverlappingReadsByCoverage(readCountsDownstream, STRAND_PLUS);
 
 	return 0;
 }
