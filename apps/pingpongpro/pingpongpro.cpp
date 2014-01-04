@@ -30,9 +30,13 @@ struct AppOptions
 	TInputFiles inputFiles;
 	CharString outputBedGraph;
 	unsigned int verbosity;
+	unsigned int minReadLength;
+	unsigned int maxReadLength;
 
 	AppOptions():
-		verbosity(0)
+		verbosity(0),
+		minReadLength(24),
+		maxReadLength(32)
 	{}
 };
 
@@ -77,6 +81,8 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 {
 	ArgumentParser parser("pingpongpro");
 
+	stringstream ss; // for concatenating strings
+
 	// define usage and description
 	addUsageLine(parser, "[\\fIOPTIONS\\fP] \"\\fITEXT\\fP\"");
 	setShortDescription(parser, "Find ping-pong signatures with the help of a professional.");
@@ -97,7 +103,16 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	addOption(parser, ArgParseOption("b", "output-bedgraph", "Output loci with ping-pong signature in bedGraph format to specified file", ArgParseArgument::OUTPUTFILE, "PATH", true));
 	setRequired(parser, "output-bedgraph");
 
-	addOption(parser, ArgParseOption("v", "verbose", "Print messages about the current progress"));
+	ss << "Reads shorter than this length are ignored (default:" << options.minReadLength << ")";
+	addOption(parser, ArgParseOption("m", "min-read-length", ss.str(), ArgParseArgument::INTEGER, "INTEGER", true));
+	ss.str("");
+	setMinValue(parser, "min-read-length", "1");
+	ss << "Reads longer than this length are ignored (default:" << options.maxReadLength << ")";
+	addOption(parser, ArgParseOption("M", "max-read-length", ss.str(), ArgParseArgument::INTEGER, "INTEGER", true));
+	setMinValue(parser, "max-read-length", "1");
+	ss.str("");
+
+	addOption(parser, ArgParseOption("v", "verbose", "Print messages about the current progress (default: off)"));
 
 	// parse command line
 	ArgumentParser::ParseResult parserResult = parse(parser, argc, argv);
@@ -111,6 +126,13 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	getOptionValue(options.outputBedGraph, parser, "output-bedgraph");
 	if (isSet(parser, "verbose"))
 		options.verbosity = 3;
+	getOptionValue(options.minReadLength, parser, "min-read-length");
+	getOptionValue(options.maxReadLength, parser, "max-read-length");
+	if (options.minReadLength > options.maxReadLength)
+	{
+		cerr << getAppName(parser) << ": maximum read length (" << options.maxReadLength << ") must not be lower than minimum read length (" << options.minReadLength << ")" << endl;
+		return ArgumentParser::PARSE_ERROR;
+	}
 
 	return parserResult;
 }
@@ -140,7 +162,7 @@ unsigned int stopwatch()
 //   bamFile: the BAM/SAM file from where to load the reads
 //   readCountsUpstream: stats for positions were reads on the minus strand overlap the upstream (5') ends of reads on the plus strand
 //   readCountsDownstream: stats for positions were reads on the minus strand overlap the downstream (3') ends of reads on the plus strand
-int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCountsUpstream, TCountsGenome &readCountsDownstream)
+int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCountsUpstream, TCountsGenome &readCountsDownstream, unsigned int minReadLength, unsigned int maxReadLength)
 {
 	TCountsPosition *positionUpstream;
 	TCountsPosition *positionDownstream;
@@ -155,7 +177,9 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCountsUpstream, T
 		}
 
 		//todo: weighted counting of multimapped reads
-		if (record.beginPos != BamAlignmentRecord::INVALID_POS && record.beginPos != -1)
+		if ((record.beginPos != BamAlignmentRecord::INVALID_POS) && (record.beginPos != -1) && // skip unmapped reads
+		    (length(record.seq) >= minReadLength) && (length(record.seq) <= maxReadLength)) // skip reads which are not within the specified length range
+
 		{
 			// calculate alignment length using CIGAR string, i.e., distance from first matching base on the reference to the last matching base on the reference
 			size_t alignmentLength = 0;
@@ -303,8 +327,8 @@ void aggregateOverlappingReadsByCoverage(TCountsGenome &readCounts, const unsign
 					{
 						if ((position->second.reads >= coverage) && (positionOnOppositeStrand->second.reads >= coverage))
 						{
-							if (position->second.reads < coverage+10)
-							{
+//							if (position->second.reads < coverage+10)
+//							{
 								aggregatedCounts[downstreamStrand].reads += position->second.reads;
 								aggregatedCounts[downstreamStrand].readsWithAAtBase10 += position->second.readsWithAAtBase10;
 								aggregatedCounts[downstreamStrand].readsWithUAtBase10FromEnd += position->second.readsWithUAtBase10FromEnd;
@@ -313,7 +337,7 @@ void aggregateOverlappingReadsByCoverage(TCountsGenome &readCounts, const unsign
 								aggregatedCounts[upstreamStrand].readsWithAAtBase10 += positionOnOppositeStrand->second.readsWithAAtBase10;
 								aggregatedCounts[upstreamStrand].readsWithUAtBase10FromEnd += positionOnOppositeStrand->second.readsWithUAtBase10FromEnd;
 								aggregatedCounts[upstreamStrand].readsWithNonTemplateBase += positionOnOppositeStrand->second.readsWithNonTemplateBase;
-							}
+//							}
 						}
 						else
 						{
@@ -382,7 +406,7 @@ int main(int argc, char const ** argv)
 		}
 
 		// for every position in the genome, count the number of reads that start at a given position
-		if (countReadsInBamFile(bamFile, readCountsUpstream, readCountsDownstream) != 0)
+		if (countReadsInBamFile(bamFile, readCountsUpstream, readCountsDownstream, options.minReadLength, options.maxReadLength) != 0)
 			return 1;
 
 		// remember @SQ header lines from BAM file for mapping of contig IDs to human-readable names
