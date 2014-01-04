@@ -35,8 +35,8 @@ struct AppOptions
 
 	AppOptions():
 		verbosity(0),
-		minReadLength(24),
-		maxReadLength(32)
+		minReadLength(1),
+		maxReadLength(1000)
 	{}
 };
 
@@ -84,35 +84,34 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	stringstream ss; // for concatenating strings
 
 	// define usage and description
-	addUsageLine(parser, "[\\fIOPTIONS\\fP] \"\\fITEXT\\fP\"");
-	setShortDescription(parser, "Find ping-pong signatures with the help of a professional.");
+	addUsageLine(parser, "[\\fIOPTIONS\\fP] [-i \\fISAM_INPUT_FILE\\fP [-i ...]] -b \\fIBEDGRAPH_OUTPUT_FILE\\fP");
+	setShortDescription(parser, "Find ping-pong signatures with the help of a professional");
 	// todo: define long description
-	addDescription(parser, "This is the application skelleton and you should modify this string.");
+	addDescription(parser, "pingpongpro scans RNA-Seq data for reads on opposite strands which overlap by 10 nucleotides.");
 	setVersion(parser, "0.1");
 	setDate(parser, "Jan 2014");
 	// todo: Add Examples Section.
-	addTextSection(parser, "Examples");
-	addListItem(parser, "\\fBpingpongpro\\fP \\fB-v\\fP \\fItext\\fP", "Call with \\fITEXT\\fP set to \"text\" with verbose output.");
+/*	addTextSection(parser, "Examples");
+	addListItem(parser, "\\fBpingpongpro\\fP \\fB-v\\fP \\fItext\\fP", "Call with \\fITEXT\\fP set to \"text\" with verbose output.");*/
 
-	addOption(parser, ArgParseOption("i", "input", "Input file(s) in SAM/BAM format", ArgParseArgument::INPUTFILE, "PATH", true));
+	addOption(parser, ArgParseOption("i", "input", "Input file(s) in SAM/BAM format.", ArgParseArgument::INPUTFILE, "PATH", true));
+	setDefaultValue(parser, "input", "-");
 	vector< string > acceptedInputFormats;
 	acceptedInputFormats.push_back(".sam");
 	acceptedInputFormats.push_back(".bam");
 	setValidValues(parser, "input", acceptedInputFormats);
 
-	addOption(parser, ArgParseOption("b", "output-bedgraph", "Output loci with ping-pong signature in bedGraph format to specified file", ArgParseArgument::OUTPUTFILE, "PATH", true));
+	addOption(parser, ArgParseOption("b", "output-bedgraph", "Output loci with ping-pong signature to specified file in bedGraph format.", ArgParseArgument::OUTPUTFILE, "PATH", true));
 	setRequired(parser, "output-bedgraph");
 
-	ss << "Reads shorter than this length are ignored (default:" << options.minReadLength << ")";
-	addOption(parser, ArgParseOption("m", "min-read-length", ss.str(), ArgParseArgument::INTEGER, "INTEGER", true));
-	ss.str("");
+	addOption(parser, ArgParseOption("m", "min-read-length", "Reads shorter than the specified length are ignored.", ArgParseArgument::INTEGER, "LENGTH", true));
+	setDefaultValue(parser, "min-read-length", options.minReadLength);
 	setMinValue(parser, "min-read-length", "1");
-	ss << "Reads longer than this length are ignored (default:" << options.maxReadLength << ")";
-	addOption(parser, ArgParseOption("M", "max-read-length", ss.str(), ArgParseArgument::INTEGER, "INTEGER", true));
+	addOption(parser, ArgParseOption("M", "max-read-length", "Reads longer than the specified length are ignored.", ArgParseArgument::INTEGER, "LENGTH", true));
+	setDefaultValue(parser, "max-read-length", options.maxReadLength);
 	setMinValue(parser, "max-read-length", "1");
-	ss.str("");
 
-	addOption(parser, ArgParseOption("v", "verbose", "Print messages about the current progress (default: off)"));
+	addOption(parser, ArgParseOption("v", "verbose", "Print messages about the current progress. Default: off."));
 
 	// parse command line
 	ArgumentParser::ParseResult parserResult = parse(parser, argc, argv);
