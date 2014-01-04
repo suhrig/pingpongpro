@@ -32,11 +32,13 @@ struct AppOptions
 	unsigned int verbosity;
 	unsigned int minReadLength;
 	unsigned int maxReadLength;
+	unsigned int minCoverage;
 
 	AppOptions():
 		verbosity(0),
 		minReadLength(1),
-		maxReadLength(1000)
+		maxReadLength(1000),
+		minCoverage(100)
 	{}
 };
 
@@ -81,18 +83,20 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 {
 	ArgumentParser parser("pingpongpro");
 
-	stringstream ss; // for concatenating strings
-
 	// define usage and description
 	addUsageLine(parser, "[\\fIOPTIONS\\fP] [-i \\fISAM_INPUT_FILE\\fP [-i ...]] -b \\fIBEDGRAPH_OUTPUT_FILE\\fP");
 	setShortDescription(parser, "Find ping-pong signatures with the help of a professional");
 	// todo: define long description
-	addDescription(parser, "pingpongpro scans RNA-Seq data for reads on opposite strands which overlap by 10 nucleotides.");
+	addDescription(parser, "pingpongpro scans piRNA-Seq data for signs of ping-pong cycle activity. The ping-pong cycle produces piRNA molecules with complementary ends. These molecules appear as stacks of aligned reads whose 5'-ends overlap with the 3'-ends of reads on the opposite strand by exactly 10 bases.");
 	setVersion(parser, "0.1");
 	setDate(parser, "Jan 2014");
-	// todo: Add Examples Section.
-/*	addTextSection(parser, "Examples");
-	addListItem(parser, "\\fBpingpongpro\\fP \\fB-v\\fP \\fItext\\fP", "Call with \\fITEXT\\fP set to \"text\" with verbose output.");*/
+
+	addOption(parser, ArgParseOption("b", "output-bedgraph", "Output loci with ping-pong signature to specified file in bedGraph format.", ArgParseArgument::OUTPUTFILE, "PATH", true));
+	setRequired(parser, "output-bedgraph");
+
+	addOption(parser, ArgParseOption("c", "min-coverage", "Omit loci with fewer than the specified number of mapped reads from the output.", ArgParseArgument::INTEGER, "NUMBER_OF_READS", true));
+	setDefaultValue(parser, "min-coverage", options.minCoverage);
+	setMinValue(parser, "min-coverage", "1");
 
 	addOption(parser, ArgParseOption("i", "input", "Input file(s) in SAM/BAM format.", ArgParseArgument::INPUTFILE, "PATH", true));
 	setDefaultValue(parser, "input", "-");
@@ -101,13 +105,10 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	acceptedInputFormats.push_back(".bam");
 	setValidValues(parser, "input", acceptedInputFormats);
 
-	addOption(parser, ArgParseOption("b", "output-bedgraph", "Output loci with ping-pong signature to specified file in bedGraph format.", ArgParseArgument::OUTPUTFILE, "PATH", true));
-	setRequired(parser, "output-bedgraph");
-
-	addOption(parser, ArgParseOption("m", "min-read-length", "Reads shorter than the specified length are ignored.", ArgParseArgument::INTEGER, "LENGTH", true));
+	addOption(parser, ArgParseOption("l", "min-read-length", "Ignore reads in the input file that are shorter than the specified length.", ArgParseArgument::INTEGER, "LENGTH", true));
 	setDefaultValue(parser, "min-read-length", options.minReadLength);
 	setMinValue(parser, "min-read-length", "1");
-	addOption(parser, ArgParseOption("M", "max-read-length", "Reads longer than the specified length are ignored.", ArgParseArgument::INTEGER, "LENGTH", true));
+	addOption(parser, ArgParseOption("L", "max-read-length", "Ignore reads in the input file that are longer than the specified length..", ArgParseArgument::INTEGER, "LENGTH", true));
 	setDefaultValue(parser, "max-read-length", options.maxReadLength);
 	setMinValue(parser, "max-read-length", "1");
 
@@ -119,12 +120,8 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 		return parserResult;
 
 	// extract options, if parsing was successful
-	options.inputFiles.resize(getOptionValueCount(parser, "input"));
-	for (vector< string >::size_type i = 0; i < options.inputFiles.size(); i++)
-		getOptionValue(options.inputFiles[i], parser, "input", i);
 	getOptionValue(options.outputBedGraph, parser, "output-bedgraph");
-	if (isSet(parser, "verbose"))
-		options.verbosity = 3;
+	getOptionValue(options.minCoverage, parser, "min-coverage");
 	getOptionValue(options.minReadLength, parser, "min-read-length");
 	getOptionValue(options.maxReadLength, parser, "max-read-length");
 	if (options.minReadLength > options.maxReadLength)
@@ -132,6 +129,11 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 		cerr << getAppName(parser) << ": maximum read length (" << options.maxReadLength << ") must not be lower than minimum read length (" << options.minReadLength << ")" << endl;
 		return ArgumentParser::PARSE_ERROR;
 	}
+	options.inputFiles.resize(getOptionValueCount(parser, "input"));
+	for (vector< string >::size_type i = 0; i < options.inputFiles.size(); i++)
+		getOptionValue(options.inputFiles[i], parser, "input", i);
+	if (isSet(parser, "verbose"))
+		options.verbosity = 3;
 
 	return parserResult;
 }
@@ -299,6 +301,20 @@ int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, cons
 	return 0;
 }
 
+struct TAggregatedCountsPosition
+{
+	double numberOfPositions;
+	double readsWithAAtBase10;
+	double readsWithUAtBase10FromEnd;
+	double readsWithNonTemplateBase;
+	TAggregatedCountsPosition():
+		numberOfPositions(0),
+		readsWithAAtBase10(0),
+		readsWithUAtBase10FromEnd(0),
+		readsWithNonTemplateBase(0)
+	{}
+};
+
 // find those positions on the genome where reads on opposite strands overlap by 10 nucleotides
 void aggregateOverlappingReadsByCoverage(TCountsGenome &readCounts, const unsigned int upstreamStrand)
 {
@@ -307,11 +323,11 @@ void aggregateOverlappingReadsByCoverage(TCountsGenome &readCounts, const unsign
 
 	unsigned int coverage = 1;
 	
-	TCountsPosition aggregatedCounts[2];
+	TAggregatedCountsPosition aggregatedCounts[2];
 	do
 	{
 		// reset counters
-		aggregatedCounts[upstreamStrand] = aggregatedCounts[downstreamStrand] = TCountsPosition();
+		aggregatedCounts[upstreamStrand] = aggregatedCounts[downstreamStrand] = TAggregatedCountsPosition();
 
 		// iterate through all strands, contigs and positions to find those positions where more than <coverage> reads on opposite strands overlap by 10 nucleotides
 		for (TCountsStrand::iterator contig = readCounts[downstreamStrand].begin(); contig != readCounts[downstreamStrand].end(); ++contig)
@@ -328,14 +344,14 @@ void aggregateOverlappingReadsByCoverage(TCountsGenome &readCounts, const unsign
 						{
 //							if (position->second.reads < coverage+10)
 //							{
-								aggregatedCounts[downstreamStrand].reads += position->second.reads;
-								aggregatedCounts[downstreamStrand].readsWithAAtBase10 += position->second.readsWithAAtBase10;
-								aggregatedCounts[downstreamStrand].readsWithUAtBase10FromEnd += position->second.readsWithUAtBase10FromEnd;
-								aggregatedCounts[downstreamStrand].readsWithNonTemplateBase += position->second.readsWithNonTemplateBase;
-								aggregatedCounts[upstreamStrand].reads += positionOnOppositeStrand->second.reads;
-								aggregatedCounts[upstreamStrand].readsWithAAtBase10 += positionOnOppositeStrand->second.readsWithAAtBase10;
-								aggregatedCounts[upstreamStrand].readsWithUAtBase10FromEnd += positionOnOppositeStrand->second.readsWithUAtBase10FromEnd;
-								aggregatedCounts[upstreamStrand].readsWithNonTemplateBase += positionOnOppositeStrand->second.readsWithNonTemplateBase;
+								aggregatedCounts[downstreamStrand].numberOfPositions++;
+								aggregatedCounts[downstreamStrand].readsWithAAtBase10 += (double) position->second.readsWithAAtBase10 / position->second.reads;
+								aggregatedCounts[downstreamStrand].readsWithUAtBase10FromEnd += (double) position->second.readsWithUAtBase10FromEnd / position->second.reads;
+								aggregatedCounts[downstreamStrand].readsWithNonTemplateBase += (double) position->second.readsWithNonTemplateBase / position->second.reads;
+								aggregatedCounts[upstreamStrand].numberOfPositions++;
+								aggregatedCounts[upstreamStrand].readsWithAAtBase10 += (double) positionOnOppositeStrand->second.readsWithAAtBase10 / positionOnOppositeStrand->second.reads;
+								aggregatedCounts[upstreamStrand].readsWithUAtBase10FromEnd += (double) positionOnOppositeStrand->second.readsWithUAtBase10FromEnd / positionOnOppositeStrand->second.reads;
+								aggregatedCounts[upstreamStrand].readsWithNonTemplateBase += (double) positionOnOppositeStrand->second.readsWithNonTemplateBase / positionOnOppositeStrand->second.reads;
 //							}
 						}
 						else
@@ -352,24 +368,23 @@ void aggregateOverlappingReadsByCoverage(TCountsGenome &readCounts, const unsign
 		cout
 			<< coverage << "\t"
 			<< downstreamStrand << "\t"
-			<< aggregatedCounts[downstreamStrand].reads << "\t"
-			<< aggregatedCounts[downstreamStrand].readsWithAAtBase10 << "\t"
-			<< aggregatedCounts[downstreamStrand].readsWithUAtBase10FromEnd << "\t"
-			<< aggregatedCounts[downstreamStrand].readsWithNonTemplateBase << "\t"
+			<< aggregatedCounts[downstreamStrand].numberOfPositions << "\t"
+			<< aggregatedCounts[downstreamStrand].readsWithAAtBase10/aggregatedCounts[downstreamStrand].numberOfPositions << "\t"
+			<< aggregatedCounts[downstreamStrand].readsWithUAtBase10FromEnd/aggregatedCounts[downstreamStrand].numberOfPositions << "\t"
+			<< aggregatedCounts[downstreamStrand].readsWithNonTemplateBase/aggregatedCounts[downstreamStrand].numberOfPositions << "\t"
 			<< upstreamStrand << "\t"
-			<< aggregatedCounts[upstreamStrand].reads << "\t"
-			<< aggregatedCounts[upstreamStrand].readsWithAAtBase10 << "\t"
-			<< aggregatedCounts[upstreamStrand].readsWithUAtBase10FromEnd << "\t"
-			<< aggregatedCounts[upstreamStrand].readsWithNonTemplateBase
+			<< aggregatedCounts[upstreamStrand].numberOfPositions << "\t"
+			<< aggregatedCounts[upstreamStrand].readsWithAAtBase10/aggregatedCounts[upstreamStrand].numberOfPositions << "\t"
+			<< aggregatedCounts[upstreamStrand].readsWithUAtBase10FromEnd/aggregatedCounts[upstreamStrand].numberOfPositions << "\t"
+			<< aggregatedCounts[upstreamStrand].readsWithNonTemplateBase/aggregatedCounts[upstreamStrand].numberOfPositions
 			<< endl;
 		coverage += 10;
-	} while (aggregatedCounts[downstreamStrand].reads > 0);
+	} while (aggregatedCounts[downstreamStrand].numberOfPositions > 0);
 }
 
 // program entry point
 int main(int argc, char const ** argv)
 {
-	//todo: insert status messages about progress
 	// parse the command line
 	AppOptions options;
 	if (parseCommandLine(options, argc, argv) != ArgumentParser::PARSE_OK)
@@ -440,8 +455,8 @@ int main(int argc, char const ** argv)
 		if (options.verbosity >= 3)
 			cerr << " done (" << stopwatch() << " seconds)" << endl;
 	}
-
-/*	if (options.verbosity >= 3)
+/*
+	if (options.verbosity >= 3)
 	{
 		cerr << "Scanning for overlapping reads ... ";
 		stopwatch();
@@ -454,17 +469,16 @@ int main(int argc, char const ** argv)
 		return 1;
 	}
 	// find positions where reads on the minus strand overlap with the upstream ends of reads on the plus strand
-	if (findOverlappingReads(bedGraphFile, readCountsUpstream, STRAND_MINUS, bamNameStore, 100) != 0)
+	if (findOverlappingReads(bedGraphFile, readCountsUpstream, STRAND_MINUS, bamNameStore, options.minCoverage) != 0)
 		return 1;
 	// find positions where reads on the minus strand overlap with the downstream ends of reads on the plus strand
-	if (findOverlappingReads(bedGraphFile, readCountsDownstream, STRAND_PLUS, bamNameStore, 100) != 0)
+	if (findOverlappingReads(bedGraphFile, readCountsDownstream, STRAND_PLUS, bamNameStore, options.minCoverage) != 0)
 		return 1;
 	bedGraphFile.close();
 
 	if (options.verbosity >= 3)
 		cerr << " done (" << stopwatch() << " seconds)" << endl;
 */
-
 	if (options.verbosity >= 3)
 	{
 		cerr << "Aggregating overlapping reads by coverage ... ";
