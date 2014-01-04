@@ -29,8 +29,10 @@ struct AppOptions
 {
 	TInputFiles inputFiles;
 	CharString outputBedGraph;
+	unsigned int verbosity;
 
-	AppOptions()
+	AppOptions():
+		verbosity(0)
 	{}
 };
 
@@ -77,7 +79,7 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 
 	// define usage and description
 	addUsageLine(parser, "[\\fIOPTIONS\\fP] \"\\fITEXT\\fP\"");
-	setShortDescription(parser, "Find ping-pong signatures with your ping-pong pal.");
+	setShortDescription(parser, "Find ping-pong signatures with the help of a professional.");
 	// todo: define long description
 	addDescription(parser, "This is the application skelleton and you should modify this string.");
 	setVersion(parser, "0.1");
@@ -95,6 +97,8 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	addOption(parser, ArgParseOption("b", "output-bedgraph", "Output loci with ping-pong signature in bedGraph format to specified file", ArgParseArgument::OUTPUTFILE, "PATH", true));
 	setRequired(parser, "output-bedgraph");
 
+	addOption(parser, ArgParseOption("v", "verbose", "Print messages about the current progress"));
+
 	// parse command line
 	ArgumentParser::ParseResult parserResult = parse(parser, argc, argv);
 	if (parserResult != ArgumentParser::PARSE_OK)
@@ -105,23 +109,27 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	for (vector< string >::size_type i = 0; i < options.inputFiles.size(); i++)
 		getOptionValue(options.inputFiles[i], parser, "input", i);
 	getOptionValue(options.outputBedGraph, parser, "output-bedgraph");
+	if (isSet(parser, "verbose"))
+		options.verbosity = 3;
 
 	return parserResult;
 }
 
 // function to measure time between the first and second invocation of the function
-void tic()
+unsigned int stopwatch()
 {
 	static time_t start = 0;
+	unsigned int elapsedSeconds = 0;
 	if (start != 0)
 	{
-		cout << "Elapsed: " << (time(NULL) - start) << endl;
+		elapsedSeconds = time(NULL) - start;
 		start = 0;
 	}
 	else
 	{
 		start = time(NULL);
 	}
+	return elapsedSeconds;
 }
 
 // Function which sums up the number of reads that start at a given position in the genome.
@@ -295,14 +303,23 @@ void aggregateOverlappingReadsByCoverage(TCountsGenome &readCounts, const unsign
 					{
 						if ((position->second.reads >= coverage) && (positionOnOppositeStrand->second.reads >= coverage))
 						{
-							aggregatedCounts[downstreamStrand].reads += position->second.reads;
-							aggregatedCounts[downstreamStrand].readsWithAAtBase10 += position->second.readsWithAAtBase10;
-							aggregatedCounts[downstreamStrand].readsWithUAtBase10FromEnd += position->second.readsWithUAtBase10FromEnd;
-							aggregatedCounts[downstreamStrand].readsWithNonTemplateBase += position->second.readsWithNonTemplateBase;
-							aggregatedCounts[upstreamStrand].reads += positionOnOppositeStrand->second.reads;
-							aggregatedCounts[upstreamStrand].readsWithAAtBase10 += positionOnOppositeStrand->second.readsWithAAtBase10;
-							aggregatedCounts[upstreamStrand].readsWithUAtBase10FromEnd += positionOnOppositeStrand->second.readsWithUAtBase10FromEnd;
-							aggregatedCounts[upstreamStrand].readsWithNonTemplateBase += positionOnOppositeStrand->second.readsWithNonTemplateBase;
+							if (position->second.reads < coverage+10)
+							{
+								aggregatedCounts[downstreamStrand].reads += position->second.reads;
+								aggregatedCounts[downstreamStrand].readsWithAAtBase10 += position->second.readsWithAAtBase10;
+								aggregatedCounts[downstreamStrand].readsWithUAtBase10FromEnd += position->second.readsWithUAtBase10FromEnd;
+								aggregatedCounts[downstreamStrand].readsWithNonTemplateBase += position->second.readsWithNonTemplateBase;
+								aggregatedCounts[upstreamStrand].reads += positionOnOppositeStrand->second.reads;
+								aggregatedCounts[upstreamStrand].readsWithAAtBase10 += positionOnOppositeStrand->second.readsWithAAtBase10;
+								aggregatedCounts[upstreamStrand].readsWithUAtBase10FromEnd += positionOnOppositeStrand->second.readsWithUAtBase10FromEnd;
+								aggregatedCounts[upstreamStrand].readsWithNonTemplateBase += positionOnOppositeStrand->second.readsWithNonTemplateBase;
+							}
+						}
+						else
+						{
+							// free memory of positions that we won't need again
+							contig->second.erase(position);
+							contigOnOppositeStrand->second.erase(positionOnOppositeStrand);
 						}
 					}
 				}
@@ -322,13 +339,14 @@ void aggregateOverlappingReadsByCoverage(TCountsGenome &readCounts, const unsign
 			<< aggregatedCounts[upstreamStrand].readsWithUAtBase10FromEnd << "\t"
 			<< aggregatedCounts[upstreamStrand].readsWithNonTemplateBase
 			<< endl;
-		coverage++;
+		coverage += 10;
 	} while (aggregatedCounts[downstreamStrand].reads > 0);
 }
 
 // program entry point
 int main(int argc, char const ** argv)
 {
+	//todo: insert status messages about progress
 	// parse the command line
 	AppOptions options;
 	if (parseCommandLine(options, argc, argv) != ArgumentParser::PARSE_OK)
@@ -349,6 +367,12 @@ int main(int argc, char const ** argv)
 	// read all BAM/SAM files
 	for(TInputFiles::iterator inputFile = options.inputFiles.begin(); inputFile != options.inputFiles.end(); ++inputFile)
 	{
+		if (options.verbosity >= 3)
+		{
+			cerr << "Counting reads in SAM/BAM file " << toCString(*inputFile) << " ... ";
+			stopwatch();
+		}
+
 		// open SAM/BAM file
 		BamStream bamFile(toCString(*inputFile));
 		if (!isGood(bamFile))
@@ -389,6 +413,15 @@ int main(int argc, char const ** argv)
 
 		// close SAM/BAM file
 		close(bamFile);
+
+		if (options.verbosity >= 3)
+			cerr << " done (" << stopwatch() << " seconds)" << endl;
+	}
+
+/*	if (options.verbosity >= 3)
+	{
+		cerr << "Scanning for overlapping reads ... ";
+		stopwatch();
 	}
 
 	ofstream bedGraphFile(toCString(options.outputBedGraph));
@@ -405,8 +438,21 @@ int main(int argc, char const ** argv)
 		return 1;
 	bedGraphFile.close();
 
-//	aggregateOverlappingReadsByCoverage(readCountsUpstream, STRAND_MINUS);
-//	aggregateOverlappingReadsByCoverage(readCountsDownstream, STRAND_PLUS);
+	if (options.verbosity >= 3)
+		cerr << " done (" << stopwatch() << " seconds)" << endl;
+*/
+
+	if (options.verbosity >= 3)
+	{
+		cerr << "Aggregating overlapping reads by coverage ... ";
+		stopwatch();
+	}
+
+	aggregateOverlappingReadsByCoverage(readCountsUpstream, STRAND_MINUS);
+	aggregateOverlappingReadsByCoverage(readCountsDownstream, STRAND_PLUS);
+
+	if (options.verbosity >= 3)
+		cerr << " done (" << stopwatch() << " seconds)" << endl;
 
 	return 0;
 }
