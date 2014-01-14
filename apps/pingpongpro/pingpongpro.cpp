@@ -76,6 +76,8 @@ typedef Iterator<TNameStore>::Type TNameStoreIterator;
 
 // type to store a score for each stack height found in the input file
 typedef map< unsigned int, int64_t > TStackScoreMap;
+//type to store p-values for each combined stack score
+typedef map< int64_t, double > TCombinedStackScoreMap;
 
 // ==========================================================================
 // Functions
@@ -142,7 +144,7 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 }
 
 // function to measure time between the first and second invocation of the function
-unsigned int stopwatch()
+unsigned int stopwatch(const string &operation, unsigned int verbosity)
 {
 	static time_t start = 0;
 	unsigned int elapsedSeconds = 0;
@@ -154,6 +156,13 @@ unsigned int stopwatch()
 	else
 	{
 		start = time(NULL);
+	}
+	if (verbosity > 3)
+	{
+		if (elapsedSeconds > 0)
+			cerr << "done (" << elapsedSeconds << " seconds)";
+		else
+			cerr << operation << " ... " << endl;
 	}
 	return elapsedSeconds;
 }
@@ -219,13 +228,58 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCountsUpstream, u
 	return 0;
 }
 
-void calculateStackScoreMap(TCountsGenome &readCounts, TStackScoreMap &stackScoreMap)
+void calculateStackScores(TCountsGenome &readCounts, TStackScoreMap &stackScoreMap)
 {
-	// iterate through all strands, contigs and positions to count how many stacks there are of a given height
+	// iterate through all strands, contigs and positions to count how many stacks there are of any given height
 	for (unsigned int strand = STRAND_PLUS; strand <= STRAND_MINUS; ++strand)
 		for (TCountsStrand::iterator contig = readCounts[strand].begin(); contig != readCounts[strand].end(); ++contig)
 			for (TCountsContig::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
 				stackScoreMap[position->second.reads] += 1;
+}
+
+void calculateCombinedStackScores(TCountsGenome &readCounts, TStackScoreMap &stackScoreMap, TCombinedStackScoreMap &combinedStackScoreMap)
+{
+	for (int overlap = -10; overlap <= 30; overlap++)
+	{
+		// ignore overlaps close to 10 nt
+		// such overlaps often result from the slicer enzyme not cutting after exactly 10 nt
+		if ((overlap >= 7) && (overlap <= 13))
+			continue;
+
+		// iterate through all strands, contigs and positions to find those positions where stacks overlap by <overlap> nucleotides
+		for (TCountsStrand::iterator contigPlusStrand = readCounts[STRAND_PLUS].begin(); contigPlusStrand != readCounts[STRAND_PLUS].end(); ++contigPlusStrand)
+		{
+			TCountsStrand::iterator contigMinusStrand = readCounts[STRAND_MINUS].find(contigPlusStrand->first);
+			if (contigMinusStrand != readCounts[STRAND_MINUS].end())
+			{
+				for (TCountsContig::iterator positionPlusStrand = contigPlusStrand->second.begin(); positionPlusStrand != contigPlusStrand->second.end(); ++positionPlusStrand)
+				{
+					TCountsContig::iterator positionMinusStrand = contigMinusStrand->second.find(positionPlusStrand->first + overlap);
+					if (positionMinusStrand != contigMinusStrand->second.end())
+						// multiply scores of individual stacks on opposite strand to obtain combined stack score
+						// then, increase counter which keeps track of how many loci are found with this combined stack score
+						combinedStackScoreMap[stackScoreMap[positionPlusStrand->second.reads]*stackScoreMap[positionMinusStrand->second.reads]]++;
+				}
+			}
+		}
+	}
+
+	double cumulativeCount = 0;
+	for (TCombinedStackScoreMap::iterator combinedStackScore = combinedStackScoreMap.begin(); combinedStackScore != combinedStackScoreMap.end(); ++combinedStackScore)
+	{
+		// count how many combined stacks were found in total
+		// later, we divide the number of occurrences of stacks with a certain combined stack score by this number to obtain empirical probabilities
+		cumulativeCount += combinedStackScore->second;
+
+		// overwrite the number of stacks having a certain combined stack score with the cumulative count,
+		// so that we can directly query the combinedStackScoreMap for scores <= a given score
+		// like so, combinedStackScoreMap[12345] then gives the number of stacks with a score <= 12345 (and not just stacks with a score == 12345)
+		combinedStackScore->second = cumulativeCount;
+	}
+
+	// divide absolute counts by the total, so that we get empirical probabilites
+	for (TCombinedStackScoreMap::iterator combinedStackScore = combinedStackScoreMap.begin(); combinedStackScore != combinedStackScoreMap.end(); ++combinedStackScore)
+		combinedStackScore->second /= cumulativeCount;
 }
 
 // find those positions on the genome where reads on opposite strands overlap by 10 nucleotides
@@ -415,18 +469,16 @@ int main(int argc, char const ** argv)
 	if (options.outputBedGraph == '-')
 		options.outputBedGraph = "/dev/stdout";
 
-	TCountsGenome readCountsUpstream; // stats about positions where reads on the minus strand overlap with the upstream ends of reads on the plus strand
+	TCountsGenome readCounts; // stats about positions where reads on the minus strand overlap with the upstream ends of reads on the plus strand
 
 	TNameStore bamNameStore;
 
 	// read all BAM/SAM files
+	if (options.verbosity >= 3)
+		cerr << "Counting reads in SAM/BAM files" << endl;
 	for(TInputFiles::iterator inputFile = options.inputFiles.begin(); inputFile != options.inputFiles.end(); ++inputFile)
 	{
-		if (options.verbosity >= 3)
-		{
-			cerr << "Counting reads in SAM/BAM file " << toCString(*inputFile) << " ... ";
-			stopwatch();
-		}
+		stopwatch(toCString(*inputFile), options.verbosity);
 
 		// open SAM/BAM file
 		BamStream bamFile(toCString(*inputFile));
@@ -437,7 +489,7 @@ int main(int argc, char const ** argv)
 		}
 
 		// for every position in the genome, count the number of reads that start at a given position
-		if (countReadsInBamFile(bamFile, readCountsUpstream, options.minReadLength, options.maxReadLength) != 0)
+		if (countReadsInBamFile(bamFile, readCounts, options.minReadLength, options.maxReadLength) != 0)
 			return 1;
 
 		// remember @SQ header lines from BAM file for mapping of contig IDs to human-readable names
@@ -469,28 +521,18 @@ int main(int argc, char const ** argv)
 		// close SAM/BAM file
 		close(bamFile);
 
-		if (options.verbosity >= 3)
-			cerr << " done (" << stopwatch() << " seconds)" << endl;
+		stopwatch("", options.verbosity);
 	}
 
-	if (options.verbosity >= 3)
-	{
-		cerr << "Calculating stack scores ... ";
-		stopwatch();
-	}
-
+	stopwatch("Calculating stack scores", options.verbosity);
 	TStackScoreMap stackScoreMap;
-	calculateStackScoreMap(readCountsUpstream, stackScoreMap);
+	calculateStackScores(readCounts, stackScoreMap);
+	stopwatch("", options.verbosity);
 
-	if (options.verbosity >= 3)
-		cerr << " done (" << stopwatch() << " seconds)" << endl;
+	TCombinedStackScoreMap combinedStackScoreMap;
+	calculateCombinedStackScores(readCounts, stackScoreMap, combinedStackScoreMap);
 
-	if (options.verbosity >= 3)
-	{
-		cerr << "Scanning for overlapping reads ... ";
-		stopwatch();
-	}
-
+	stopwatch("Scanning for overlapping reads", options.verbosity);
 	ofstream bedGraphFile(toCString(options.outputBedGraph));
 	if (bedGraphFile.fail())
 	{
@@ -498,23 +540,16 @@ int main(int argc, char const ** argv)
 		return 1;
 	}
 	// find positions where reads on the minus strand overlap with the upstream ends of reads on the plus strand
-	if (findOverlappingReads(bedGraphFile, readCountsUpstream, bamNameStore, options.minCoverage, stackScoreMap) != 0)
+	if (findOverlappingReads(bedGraphFile, readCounts, bamNameStore, options.minCoverage, stackScoreMap) != 0)
 		return 1;
 	bedGraphFile.close();
+	stopwatch("", options.verbosity);
 
-/*	if (options.verbosity >= 3)
-		cerr << " done (" << stopwatch() << " seconds)" << endl;
+/*	stopwatch("Aggregating overlapping reads by coverage", options.verbosity);
 
-	if (options.verbosity >= 3)
-	{
-		cerr << "Aggregating overlapping reads by coverage ... ";
-		stopwatch();
-	}
+	aggregateOverlappingReadsByCoverage(readCounts, STRAND_MINUS);
 
-	aggregateOverlappingReadsByCoverage(readCountsUpstream, STRAND_MINUS);
-
-	if (options.verbosity >= 3)
-		cerr << " done (" << stopwatch() << " seconds)" << endl;
+	stopwatch("", options.verbosity);
 */
 	return 0;
 }
