@@ -219,70 +219,57 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCountsUpstream, u
 	return 0;
 }
 
-void calculateStackScoreMap(TCountsGenome &readCountsUpstream, TStackScoreMap &stackScoreMap)
+void calculateStackScoreMap(TCountsGenome &readCounts, TStackScoreMap &stackScoreMap)
 {
 	// iterate through all strands, contigs and positions to count how many stacks there are of a given height
 	for (unsigned int strand = STRAND_PLUS; strand <= STRAND_MINUS; ++strand)
-		for (TCountsStrand::iterator contig = readCountsUpstream[strand].begin(); contig != readCountsUpstream[strand].end(); ++contig)
+		for (TCountsStrand::iterator contig = readCounts[strand].begin(); contig != readCounts[strand].end(); ++contig)
 			for (TCountsContig::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
 				stackScoreMap[position->second.reads] += 1;
 }
 
 // find those positions on the genome where reads on opposite strands overlap by 10 nucleotides
-int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, const unsigned int upstreamStrand, const TNameStore &bamNameStore, unsigned int coverage, TStackScoreMap &stackScoreMap)
+int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, const TNameStore &bamNameStore, unsigned int coverage, TStackScoreMap &stackScoreMap)
 {
 	const int overlap = 10;
-
-	// set downstream strand to the opposite of upstream strand
-	unsigned int downstreamStrand = (upstreamStrand == STRAND_PLUS) ? STRAND_MINUS : STRAND_PLUS;
 
 	// write one bedGraph track per strand
 	for (unsigned int strand = STRAND_PLUS; strand <= STRAND_MINUS; ++strand)
 	{
-		bedGraphFile
-			<< "track type=bedGraph name=\""
-			<< ((upstreamStrand == STRAND_MINUS) ? "5'" : "3'")
-			<< " overlap ("
-			<< ((strand == STRAND_PLUS) ? "+" : "-")
-			<< " strand)\" description=\"loci where reads on the minus strand overlap the "
-			<< ((upstreamStrand == STRAND_MINUS) ? "5'" : "3'")
-			<< " end of reads on the plus strand by 10 nucleotides ("
-			<< ((strand == STRAND_PLUS) ? "+" : "-")
-			<< " strand)\" visibility=full color=0,0,0 altColor=0,0,0 priority=20"
-			<< endl;
+		bedGraphFile << "track type=bedGraph name=\"stacks on + strand\" description=\"height of ping-pong stacks on the + strand\" visibility=full color=0,0,0 altColor=0,0,0 priority=20" << endl;
 
 		// iterate through all strands, contigs and positions to find those positions where more than <coverage> reads on both strands overlap by 10 nucleotides
-		for (TCountsStrand::iterator contig = readCounts[downstreamStrand].begin(); contig != readCounts[downstreamStrand].end(); ++contig)
+		for (TCountsStrand::iterator contigPlusStrand = readCounts[STRAND_PLUS].begin(); contigPlusStrand != readCounts[STRAND_PLUS].end(); ++contigPlusStrand)
 		{
-			TCountsStrand::iterator contigOnOppositeStrand = readCounts[upstreamStrand].find(contig->first);
-			if (contigOnOppositeStrand != readCounts[upstreamStrand].end())
+			TCountsStrand::iterator contigMinusStrand = readCounts[STRAND_MINUS].find(contigPlusStrand->first);
+			if (contigMinusStrand != readCounts[STRAND_MINUS].end())
 			{
-				for (TCountsContig::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
+				for (TCountsContig::iterator positionPlusStrand = contigPlusStrand->second.begin(); positionPlusStrand != contigPlusStrand->second.end(); ++positionPlusStrand)
 				{
-					TCountsContig::iterator positionOnOppositeStrand = contigOnOppositeStrand->second.find(position->first + overlap);
-					if (positionOnOppositeStrand != contigOnOppositeStrand->second.end())
+					TCountsContig::iterator positionMinusStrand = contigMinusStrand->second.find(positionPlusStrand->first + overlap);
+					if (positionMinusStrand != contigMinusStrand->second.end())
 					{
-						if ((position->second.reads >= coverage) && (positionOnOppositeStrand->second.reads >= coverage))
+						if ((positionPlusStrand->second.reads >= coverage) && (positionMinusStrand->second.reads >= coverage))
 						{
 							/*cout
-								<< bamNameStore[contig->first] << "\t"
-								<< (position->first+1) << "\t"
-								<< downstreamStrand << "\t"
-								<< position->second.reads << "\t"
-								<< position->second.readsWithAAtBase10 << "\t"
-								<< position->second.readsWithUAtBase10FromEnd << "\t"
-								<< position->second.readsWithNonTemplateBase << "\t"
-								<< upstreamStrand << "\t"
-								<< positionOnOppositeStrand->second.reads << "\t"
-								<< positionOnOppositeStrand->second.readsWithAAtBase10 << "\t"
-								<< positionOnOppositeStrand->second.readsWithUAtBase10FromEnd << "\t"
-								<< positionOnOppositeStrand->second.readsWithNonTemplateBase
+								<< bamNameStore[contigPlusStrand->first] << "\t"
+								<< (positionPlusStrand->first+1) << "\t"
+								<< STRAND_PLUS << "\t"
+								<< positionPlusStrand->second.reads << "\t"
+								<< positionPlusStrand->second.readsWithAAtBase10 << "\t"
+								<< positionPlusStrand->second.readsWithUAtBase10FromEnd << "\t"
+								<< positionPlusStrand->second.readsWithNonTemplateBase << "\t"
+								<< STRAND_MINUS << "\t"
+								<< positionMinusStrand->second.reads << "\t"
+								<< positionMinusStrand->second.readsWithAAtBase10 << "\t"
+								<< positionMinusStrand->second.readsWithUAtBase10FromEnd << "\t"
+								<< positionMinusStrand->second.readsWithNonTemplateBase
 								<< endl;*/
 							bedGraphFile
-								<< bamNameStore[contig->first] << " "
-								<< position->first << " "
-								<< position->first+1 << " "
-								<< ((strand == STRAND_PLUS) ? position->second.reads : positionOnOppositeStrand->second.reads) << endl;
+								<< bamNameStore[contigPlusStrand->first] << " "
+								<< positionPlusStrand->first << " "
+								<< positionPlusStrand->first+1 << " "
+								<< ((strand == STRAND_PLUS) ? positionPlusStrand->second.reads : positionMinusStrand->second.reads) << endl;
 							//todo: test error handling
 							if (bedGraphFile.bad())
 							{
@@ -296,33 +283,26 @@ int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, cons
 		}
 	}
 
-	bedGraphFile
-		<< "track type=bedGraph name=\"stack scores for "
-		<< ((upstreamStrand == STRAND_MINUS) ? "5'" : "3'")
-		<< " overlap\" description=\"stack scores for loci where reads on the minus strand overlap the "
-		<< ((upstreamStrand == STRAND_MINUS) ? "5'" : "3'")
-		<< " end of reads on the plus strand by 10 nucleotides\""
-		<< " visibility=full color=0,0,0 altColor=0,0,0 priority=20"
-		<< endl;
+	bedGraphFile << "track type=bedGraph name=\"scores for ping-pong stacks\" description=\"scores for ping-pong stacks\" visibility=full color=0,0,0 altColor=0,0,0 priority=20" << endl;
 
 	// iterate through all strands, contigs and positions to find those positions where more than <coverage> reads on both strands overlap by 10 nucleotides
-	for (TCountsStrand::iterator contig = readCounts[downstreamStrand].begin(); contig != readCounts[downstreamStrand].end(); ++contig)
+	for (TCountsStrand::iterator contigPlusStrand = readCounts[STRAND_PLUS].begin(); contigPlusStrand != readCounts[STRAND_PLUS].end(); ++contigPlusStrand)
 	{
-		TCountsStrand::iterator contigOnOppositeStrand = readCounts[upstreamStrand].find(contig->first);
-		if (contigOnOppositeStrand != readCounts[upstreamStrand].end())
+		TCountsStrand::iterator contigMinusStrand = readCounts[STRAND_MINUS].find(contigPlusStrand->first);
+		if (contigMinusStrand != readCounts[STRAND_MINUS].end())
 		{
-			for (TCountsContig::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
+			for (TCountsContig::iterator positionPlusStrand = contigPlusStrand->second.begin(); positionPlusStrand != contigPlusStrand->second.end(); ++positionPlusStrand)
 			{
-				TCountsContig::iterator positionOnOppositeStrand = contigOnOppositeStrand->second.find(position->first + overlap);
-				if (positionOnOppositeStrand != contigOnOppositeStrand->second.end())
+				TCountsContig::iterator positionMinusStrand = contigMinusStrand->second.find(positionPlusStrand->first + overlap);
+				if (positionMinusStrand != contigMinusStrand->second.end())
 				{
-					if ((position->second.reads >= coverage) && (positionOnOppositeStrand->second.reads >= coverage))
+					if ((positionPlusStrand->second.reads >= coverage) && (positionMinusStrand->second.reads >= coverage))
 					{
 						bedGraphFile
-							<< bamNameStore[contig->first] << " "
-							<< position->first << " "
-							<< position->first+1 << " "
-							<< stackScoreMap[position->second.reads] * stackScoreMap[positionOnOppositeStrand->second.reads] << endl;
+							<< bamNameStore[contigPlusStrand->first] << " "
+							<< positionPlusStrand->first << " "
+							<< positionPlusStrand->first+1 << " "
+							<< stackScoreMap[positionPlusStrand->second.reads] * stackScoreMap[positionMinusStrand->second.reads] << endl;
 						//todo: test error handling
 						if (bedGraphFile.bad())
 						{
@@ -518,7 +498,7 @@ int main(int argc, char const ** argv)
 		return 1;
 	}
 	// find positions where reads on the minus strand overlap with the upstream ends of reads on the plus strand
-	if (findOverlappingReads(bedGraphFile, readCountsUpstream, STRAND_MINUS, bamNameStore, options.minCoverage, stackScoreMap) != 0)
+	if (findOverlappingReads(bedGraphFile, readCountsUpstream, bamNameStore, options.minCoverage, stackScoreMap) != 0)
 		return 1;
 	bedGraphFile.close();
 
