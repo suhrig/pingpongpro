@@ -74,6 +74,9 @@ typedef TCountsStrand TCountsGenome[2];
 typedef seqan::StringSet<seqan::CharString> TNameStore;
 typedef Iterator<TNameStore>::Type TNameStoreIterator;
 
+// type to store a score for each stack height found in the input file
+typedef map< unsigned int, int64_t > TStackScoreMap;
+
 // ==========================================================================
 // Functions
 // ==========================================================================
@@ -85,9 +88,9 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 
 	// define usage and description
 	addUsageLine(parser, "[\\fIOPTIONS\\fP] [-i \\fISAM_INPUT_FILE\\fP [-i ...]] -b \\fIBEDGRAPH_OUTPUT_FILE\\fP");
-	setShortDescription(parser, "Find ping-pong signatures with the help of a professional");
+	setShortDescription(parser, "Find ping-pong signatures like a pro");
 	// todo: define long description
-	addDescription(parser, "pingpongpro scans piRNA-Seq data for signs of ping-pong cycle activity. The ping-pong cycle produces piRNA molecules with complementary ends. These molecules appear as stacks of aligned reads whose 5'-ends overlap with the 3'-ends of reads on the opposite strand by exactly 10 bases.");
+	addDescription(parser, "pingpongpro scans piRNA-Seq data for signs of ping-pong cycle activity. The ping-pong cycle produces piRNA molecules with complementary 5'-ends. These molecules appear as stacks of aligned reads whose 5'-ends overlap with the 5'-ends of reads on the opposite strand by exactly 10 bases.");
 	setVersion(parser, "0.1");
 	setDate(parser, "Jan 2014");
 
@@ -108,11 +111,11 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	addOption(parser, ArgParseOption("l", "min-read-length", "Ignore reads in the input file that are shorter than the specified length.", ArgParseArgument::INTEGER, "LENGTH", true));
 	setDefaultValue(parser, "min-read-length", options.minReadLength);
 	setMinValue(parser, "min-read-length", "1");
-	addOption(parser, ArgParseOption("L", "max-read-length", "Ignore reads in the input file that are longer than the specified length..", ArgParseArgument::INTEGER, "LENGTH", true));
+	addOption(parser, ArgParseOption("L", "max-read-length", "Ignore reads in the input file that are longer than the specified length.", ArgParseArgument::INTEGER, "LENGTH", true));
 	setDefaultValue(parser, "max-read-length", options.maxReadLength);
 	setMinValue(parser, "max-read-length", "1");
 
-	addOption(parser, ArgParseOption("v", "verbose", "Print messages about the current progress. Default: off."));
+	addOption(parser, ArgParseOption("v", "verbose", "Print messages to stderr  about the current progress. Default: off."));
 
 	// parse command line
 	ArgumentParser::ParseResult parserResult = parse(parser, argc, argv);
@@ -162,11 +165,9 @@ unsigned int stopwatch()
 // Parameters:
 //   bamFile: the BAM/SAM file from where to load the reads
 //   readCountsUpstream: stats for positions were reads on the minus strand overlap the upstream (5') ends of reads on the plus strand
-//   readCountsDownstream: stats for positions were reads on the minus strand overlap the downstream (3') ends of reads on the plus strand
-int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCountsUpstream, TCountsGenome &readCountsDownstream, unsigned int minReadLength, unsigned int maxReadLength)
+int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCountsUpstream, unsigned int minReadLength, unsigned int maxReadLength)
 {
 	TCountsPosition *positionUpstream;
-	TCountsPosition *positionDownstream;
 
 	BamAlignmentRecord record;
 	while (!atEnd(bamFile))
@@ -191,39 +192,26 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCountsUpstream, T
 			if (hasFlagRC(record)) // read maps to minus strand
 			{
 				positionUpstream = &(readCountsUpstream[STRAND_MINUS][record.rID][record.beginPos+alignmentLength]);
-				positionDownstream = &(readCountsDownstream[STRAND_MINUS][record.rID][record.beginPos]);
-				if ((record.cigar[length(record.cigar)-1].operation == 'S') && (record.cigar[length(record.cigar)-1].count == 1))
-					positionDownstream->readsWithNonTemplateBase++;
 				if ((record.cigar[0].operation == 'S') && (record.cigar[0].count == 1))
 					positionUpstream->readsWithNonTemplateBase++;
 			}
 			else // read maps to plus strand
 			{
 				positionUpstream = &(readCountsUpstream[STRAND_PLUS][record.rID][record.beginPos]);
-				positionDownstream = &(readCountsDownstream[STRAND_PLUS][record.rID][record.beginPos+alignmentLength]);
 				if ((record.cigar[length(record.cigar)-1].operation == 'S') && (record.cigar[length(record.cigar)-1].count == 1))
 					positionUpstream->readsWithNonTemplateBase++;
-				if ((record.cigar[0].operation == 'S') && (record.cigar[0].count == 1))
-					positionDownstream->readsWithNonTemplateBase++;
 			}
 
 			// increase read counters for the given position on the genome
 			positionUpstream->reads++;
-			positionDownstream->reads++;
 
 			// check if 10th base is an Adenine or if the 10th base from the end of the read is a Uracil
 			if (alignmentLength >= 10)
 			{
 				if ((record.seq[9] == 'A') || (record.seq[9] == 'a'))
-				{
 					positionUpstream->readsWithAAtBase10++;
-					positionDownstream->readsWithAAtBase10++;
-				}
 				if ((record.seq[length(record.seq)-10] == 'T') || (record.seq[length(record.seq)-10] == 't'))
-				{
 					positionUpstream->readsWithUAtBase10FromEnd++;
-					positionDownstream->readsWithUAtBase10FromEnd++;
-				}
 			}
 		}
 	}
@@ -231,9 +219,19 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCountsUpstream, T
 	return 0;
 }
 
-// find those positions on the genome where reads on opposite strands overlap by 10 nucleotides
-int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, const unsigned int upstreamStrand, const TNameStore &bamNameStore, unsigned int coverage)
+void calculateStackScoreMap(TCountsGenome &readCountsUpstream, TStackScoreMap &stackScoreMap)
 {
+	// iterate through all strands, contigs and positions to count how many stacks there are of a given height
+	for (unsigned int strand = STRAND_PLUS; strand <= STRAND_MINUS; ++strand)
+		for (TCountsStrand::iterator contig = readCountsUpstream[strand].begin(); contig != readCountsUpstream[strand].end(); ++contig)
+			for (TCountsContig::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
+				stackScoreMap[position->second.reads] += 1;
+}
+
+// find those positions on the genome where reads on opposite strands overlap by 10 nucleotides
+int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, const unsigned int upstreamStrand, const TNameStore &bamNameStore, unsigned int coverage, TStackScoreMap &stackScoreMap)
+{
+	const int overlap = 10;
 
 	// set downstream strand to the opposite of upstream strand
 	unsigned int downstreamStrand = (upstreamStrand == STRAND_PLUS) ? STRAND_MINUS : STRAND_PLUS;
@@ -261,7 +259,7 @@ int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, cons
 			{
 				for (TCountsContig::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
 				{
-					TCountsContig::iterator positionOnOppositeStrand = contigOnOppositeStrand->second.find(position->first + 10);
+					TCountsContig::iterator positionOnOppositeStrand = contigOnOppositeStrand->second.find(position->first + overlap);
 					if (positionOnOppositeStrand != contigOnOppositeStrand->second.end())
 					{
 						if ((position->second.reads >= coverage) && (positionOnOppositeStrand->second.reads >= coverage))
@@ -291,6 +289,45 @@ int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, cons
 								cerr << "Failed to write bedGraph record" << endl;
 								return 1;
 							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	bedGraphFile
+		<< "track type=bedGraph name=\"stack scores for "
+		<< ((upstreamStrand == STRAND_MINUS) ? "5'" : "3'")
+		<< " overlap\" description=\"stack scores for loci where reads on the minus strand overlap the "
+		<< ((upstreamStrand == STRAND_MINUS) ? "5'" : "3'")
+		<< " end of reads on the plus strand by 10 nucleotides\""
+		<< " visibility=full color=0,0,0 altColor=0,0,0 priority=20"
+		<< endl;
+
+	// iterate through all strands, contigs and positions to find those positions where more than <coverage> reads on both strands overlap by 10 nucleotides
+	for (TCountsStrand::iterator contig = readCounts[downstreamStrand].begin(); contig != readCounts[downstreamStrand].end(); ++contig)
+	{
+		TCountsStrand::iterator contigOnOppositeStrand = readCounts[upstreamStrand].find(contig->first);
+		if (contigOnOppositeStrand != readCounts[upstreamStrand].end())
+		{
+			for (TCountsContig::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
+			{
+				TCountsContig::iterator positionOnOppositeStrand = contigOnOppositeStrand->second.find(position->first + overlap);
+				if (positionOnOppositeStrand != contigOnOppositeStrand->second.end())
+				{
+					if ((position->second.reads >= coverage) && (positionOnOppositeStrand->second.reads >= coverage))
+					{
+						bedGraphFile
+							<< bamNameStore[contig->first] << " "
+							<< position->first << " "
+							<< position->first+1 << " "
+							<< stackScoreMap[position->second.reads] * stackScoreMap[positionOnOppositeStrand->second.reads] << endl;
+						//todo: test error handling
+						if (bedGraphFile.bad())
+						{
+							cerr << "Failed to write bedGraph record" << endl;
+							return 1;
 						}
 					}
 				}
@@ -393,12 +430,12 @@ int main(int argc, char const ** argv)
 	// read from stdin, if no input file is given
 	if (options.inputFiles.size() == 0)
 		options.inputFiles.push_back("/dev/stdin");
+	//todo: scan input files for "-" and replace with "/dev/stdin"
 
 	if (options.outputBedGraph == '-')
 		options.outputBedGraph = "/dev/stdout";
 
 	TCountsGenome readCountsUpstream; // stats about positions where reads on the minus strand overlap with the upstream ends of reads on the plus strand
-	TCountsGenome readCountsDownstream; // stats about positions where reads on the minus strand overlap with the downstream ends of reads on the plus strand
 
 	TNameStore bamNameStore;
 
@@ -420,7 +457,7 @@ int main(int argc, char const ** argv)
 		}
 
 		// for every position in the genome, count the number of reads that start at a given position
-		if (countReadsInBamFile(bamFile, readCountsUpstream, readCountsDownstream, options.minReadLength, options.maxReadLength) != 0)
+		if (countReadsInBamFile(bamFile, readCountsUpstream, options.minReadLength, options.maxReadLength) != 0)
 			return 1;
 
 		// remember @SQ header lines from BAM file for mapping of contig IDs to human-readable names
@@ -455,7 +492,19 @@ int main(int argc, char const ** argv)
 		if (options.verbosity >= 3)
 			cerr << " done (" << stopwatch() << " seconds)" << endl;
 	}
-/*
+
+	if (options.verbosity >= 3)
+	{
+		cerr << "Calculating stack scores ... ";
+		stopwatch();
+	}
+
+	TStackScoreMap stackScoreMap;
+	calculateStackScoreMap(readCountsUpstream, stackScoreMap);
+
+	if (options.verbosity >= 3)
+		cerr << " done (" << stopwatch() << " seconds)" << endl;
+
 	if (options.verbosity >= 3)
 	{
 		cerr << "Scanning for overlapping reads ... ";
@@ -469,16 +518,13 @@ int main(int argc, char const ** argv)
 		return 1;
 	}
 	// find positions where reads on the minus strand overlap with the upstream ends of reads on the plus strand
-	if (findOverlappingReads(bedGraphFile, readCountsUpstream, STRAND_MINUS, bamNameStore, options.minCoverage) != 0)
-		return 1;
-	// find positions where reads on the minus strand overlap with the downstream ends of reads on the plus strand
-	if (findOverlappingReads(bedGraphFile, readCountsDownstream, STRAND_PLUS, bamNameStore, options.minCoverage) != 0)
+	if (findOverlappingReads(bedGraphFile, readCountsUpstream, STRAND_MINUS, bamNameStore, options.minCoverage, stackScoreMap) != 0)
 		return 1;
 	bedGraphFile.close();
 
-	if (options.verbosity >= 3)
+/*	if (options.verbosity >= 3)
 		cerr << " done (" << stopwatch() << " seconds)" << endl;
-*/
+
 	if (options.verbosity >= 3)
 	{
 		cerr << "Aggregating overlapping reads by coverage ... ";
@@ -486,11 +532,10 @@ int main(int argc, char const ** argv)
 	}
 
 	aggregateOverlappingReadsByCoverage(readCountsUpstream, STRAND_MINUS);
-	aggregateOverlappingReadsByCoverage(readCountsDownstream, STRAND_PLUS);
 
 	if (options.verbosity >= 3)
 		cerr << " done (" << stopwatch() << " seconds)" << endl;
-
+*/
 	return 0;
 }
 
