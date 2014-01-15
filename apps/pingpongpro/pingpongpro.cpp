@@ -173,10 +173,10 @@ unsigned int stopwatch(const string &operation, unsigned int verbosity)
 // The latter two figures help identify the significance of a putative piRNA signature.
 // Parameters:
 //   bamFile: the BAM/SAM file from where to load the reads
-//   readCountsUpstream: stats for positions were reads on the minus strand overlap the upstream (5') ends of reads on the plus strand
-int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCountsUpstream, unsigned int minReadLength, unsigned int maxReadLength)
+//   readCounts: stats for positions were reads on the minus strand overlap the 5' ends of reads on the plus strand
+int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCounts, unsigned int minReadLength, unsigned int maxReadLength)
 {
-	TCountsPosition *positionUpstream;
+	TCountsPosition *position;
 
 	BamAlignmentRecord record;
 	while (!atEnd(bamFile))
@@ -200,27 +200,27 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCountsUpstream, u
 
 			if (hasFlagRC(record)) // read maps to minus strand
 			{
-				positionUpstream = &(readCountsUpstream[STRAND_MINUS][record.rID][record.beginPos+alignmentLength]);
+				position = &(readCounts[STRAND_MINUS][record.rID][record.beginPos+alignmentLength]);
 				if ((record.cigar[0].operation == 'S') && (record.cigar[0].count == 1))
-					positionUpstream->readsWithNonTemplateBase++;
+					position->readsWithNonTemplateBase++;
 			}
 			else // read maps to plus strand
 			{
-				positionUpstream = &(readCountsUpstream[STRAND_PLUS][record.rID][record.beginPos]);
+				position = &(readCounts[STRAND_PLUS][record.rID][record.beginPos]);
 				if ((record.cigar[length(record.cigar)-1].operation == 'S') && (record.cigar[length(record.cigar)-1].count == 1))
-					positionUpstream->readsWithNonTemplateBase++;
+					position->readsWithNonTemplateBase++;
 			}
 
 			// increase read counters for the given position on the genome
-			positionUpstream->reads++;
+			position->reads++;
 
 			// check if 10th base is an Adenine or if the 10th base from the end of the read is a Uracil
 			if (alignmentLength >= 10)
 			{
 				if ((record.seq[9] == 'A') || (record.seq[9] == 'a'))
-					positionUpstream->readsWithAAtBase10++;
+					position->readsWithAAtBase10++;
 				if ((record.seq[length(record.seq)-10] == 'T') || (record.seq[length(record.seq)-10] == 't'))
-					positionUpstream->readsWithUAtBase10FromEnd++;
+					position->readsWithUAtBase10FromEnd++;
 			}
 		}
 	}
@@ -283,14 +283,19 @@ void calculateCombinedStackScores(TCountsGenome &readCounts, TStackScoreMap &sta
 }
 
 // find those positions on the genome where reads on opposite strands overlap by 10 nucleotides
-int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, const TNameStore &bamNameStore, unsigned int coverage, TStackScoreMap &stackScoreMap)
+int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, const TNameStore &bamNameStore, unsigned int coverage, TStackScoreMap &stackScoreMap, TCombinedStackScoreMap &combinedStackScoreMap)
 {
 	const int overlap = 10;
 
 	// write one bedGraph track per strand
 	for (unsigned int strand = STRAND_PLUS; strand <= STRAND_MINUS; ++strand)
 	{
-		bedGraphFile << "track type=bedGraph name=\"stacks on + strand\" description=\"height of ping-pong stacks on the + strand\" visibility=full color=0,0,0 altColor=0,0,0 priority=20" << endl;
+		bedGraphFile
+			<< "track type=bedGraph name=\"stacks on "
+			<< ((strand == STRAND_PLUS) ? "+" : "-")
+			<< " strand\" description=\"height of ping-pong stacks on the "
+			<< ((strand == STRAND_PLUS) ? "+" : "-")
+			<< " strand\" visibility=full color=0,0,0 altColor=0,0,0 priority=20" << endl;
 
 		// iterate through all strands, contigs and positions to find those positions where more than <coverage> reads on both strands overlap by 10 nucleotides
 		for (TCountsStrand::iterator contigPlusStrand = readCounts[STRAND_PLUS].begin(); contigPlusStrand != readCounts[STRAND_PLUS].end(); ++contigPlusStrand)
@@ -352,11 +357,16 @@ int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, cons
 				{
 					if ((positionPlusStrand->second.reads >= coverage) && (positionMinusStrand->second.reads >= coverage))
 					{
+						// find p-value given the heights of the two stacks
+						// if the p-value cannot be found (because the score is so bad), assume 1 as p-value
+						TCombinedStackScoreMap::iterator combinedStackScore = combinedStackScoreMap.lower_bound(stackScoreMap[positionPlusStrand->second.reads] * stackScoreMap[positionMinusStrand->second.reads]);
+						double pvalue = (combinedStackScore != combinedStackScoreMap.end()) ? combinedStackScore->second : 1;
+
 						bedGraphFile
 							<< bamNameStore[contigPlusStrand->first] << " "
 							<< positionPlusStrand->first << " "
 							<< positionPlusStrand->first+1 << " "
-							<< stackScoreMap[positionPlusStrand->second.reads] * stackScoreMap[positionMinusStrand->second.reads] << endl;
+							<< (1 - pvalue) << endl; // invert p-values for graphs, so that high bars are a good thing
 						//todo: test error handling
 						if (bedGraphFile.bad())
 						{
@@ -469,7 +479,7 @@ int main(int argc, char const ** argv)
 	if (options.outputBedGraph == '-')
 		options.outputBedGraph = "/dev/stdout";
 
-	TCountsGenome readCounts; // stats about positions where reads on the minus strand overlap with the upstream ends of reads on the plus strand
+	TCountsGenome readCounts; // stats about positions where reads on the minus strand overlap with the 5' ends of reads on the plus strand
 
 	TNameStore bamNameStore;
 
@@ -539,8 +549,8 @@ int main(int argc, char const ** argv)
 		cerr << "Failed to open bedGraph file: " << toCString(options.outputBedGraph) << endl;
 		return 1;
 	}
-	// find positions where reads on the minus strand overlap with the upstream ends of reads on the plus strand
-	if (findOverlappingReads(bedGraphFile, readCounts, bamNameStore, options.minCoverage, stackScoreMap) != 0)
+	// find positions where reads on the minus strand overlap with the 5' ends of reads on the plus strand
+	if (findOverlappingReads(bedGraphFile, readCounts, bamNameStore, options.minCoverage, stackScoreMap, combinedStackScoreMap) != 0)
 		return 1;
 	bedGraphFile.close();
 	stopwatch("", options.verbosity);
