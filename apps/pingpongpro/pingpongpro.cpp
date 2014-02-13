@@ -32,13 +32,13 @@ struct AppOptions
 	unsigned int verbosity;
 	unsigned int minReadLength;
 	unsigned int maxReadLength;
-	unsigned int minCoverage;
+	unsigned int minStackHeight;
 
 	AppOptions():
 		verbosity(0),
 		minReadLength(1),
 		maxReadLength(1000),
-		minCoverage(100)
+		minStackHeight(100)
 	{}
 };
 
@@ -99,9 +99,9 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	addOption(parser, ArgParseOption("b", "output-bedgraph", "Output loci with ping-pong signature to specified file in bedGraph format.", ArgParseArgument::OUTPUTFILE, "PATH", true));
 	setRequired(parser, "output-bedgraph");
 
-	addOption(parser, ArgParseOption("c", "min-coverage", "Omit loci with fewer than the specified number of mapped reads from the output.", ArgParseArgument::INTEGER, "NUMBER_OF_READS", true));
-	setDefaultValue(parser, "min-coverage", options.minCoverage);
-	setMinValue(parser, "min-coverage", "1");
+	addOption(parser, ArgParseOption("s", "min-stack-height", "Omit stacks with fewer than the specified number of reads from the output.", ArgParseArgument::INTEGER, "NUMBER_OF_READS", true));
+	setDefaultValue(parser, "min-stack-height", options.minStackHeight);
+	setMinValue(parser, "min-stack-height", "1");
 
 	addOption(parser, ArgParseOption("i", "input", "Input file(s) in SAM/BAM format.", ArgParseArgument::INPUTFILE, "PATH", true));
 	setDefaultValue(parser, "input", "-");
@@ -126,7 +126,7 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 
 	// extract options, if parsing was successful
 	getOptionValue(options.outputBedGraph, parser, "output-bedgraph");
-	getOptionValue(options.minCoverage, parser, "min-coverage");
+	getOptionValue(options.minStackHeight, parser, "min-stack-height");
 	getOptionValue(options.minReadLength, parser, "min-read-length");
 	getOptionValue(options.maxReadLength, parser, "max-read-length");
 	if (options.minReadLength > options.maxReadLength)
@@ -283,7 +283,7 @@ void calculateCombinedStackScores(TCountsGenome &readCounts, TStackScoreMap &sta
 }
 
 // find those positions on the genome where reads on opposite strands overlap by 10 nucleotides
-int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, const TNameStore &bamNameStore, unsigned int coverage, TStackScoreMap &stackScoreMap, TCombinedStackScoreMap &combinedStackScoreMap)
+int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, const TNameStore &bamNameStore, unsigned int minStackHeight, TStackScoreMap &stackScoreMap, TCombinedStackScoreMap &combinedStackScoreMap)
 {
 	const int overlap = 10;
 
@@ -297,7 +297,7 @@ int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, cons
 			<< ((strand == STRAND_PLUS) ? "+" : "-")
 			<< " strand\" visibility=full color=0,0,0 altColor=0,0,0 priority=20" << endl;
 
-		// iterate through all strands, contigs and positions to find those positions where more than <coverage> reads on both strands overlap by 10 nucleotides
+		// iterate through all strands, contigs and positions to find those positions where more than <minStackHeight> reads on both strands overlap by 10 nucleotides
 		for (TCountsStrand::iterator contigPlusStrand = readCounts[STRAND_PLUS].begin(); contigPlusStrand != readCounts[STRAND_PLUS].end(); ++contigPlusStrand)
 		{
 			TCountsStrand::iterator contigMinusStrand = readCounts[STRAND_MINUS].find(contigPlusStrand->first);
@@ -308,7 +308,7 @@ int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, cons
 					TCountsContig::iterator positionMinusStrand = contigMinusStrand->second.find(positionPlusStrand->first + overlap);
 					if (positionMinusStrand != contigMinusStrand->second.end())
 					{
-						if ((positionPlusStrand->second.reads >= coverage) && (positionMinusStrand->second.reads >= coverage))
+						if ((positionPlusStrand->second.reads >= minStackHeight) && (positionMinusStrand->second.reads >= minStackHeight))
 						{
 							/*cout
 								<< bamNameStore[contigPlusStrand->first] << "\t"
@@ -344,7 +344,7 @@ int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, cons
 
 	bedGraphFile << "track type=bedGraph name=\"scores for ping-pong stacks\" description=\"scores for ping-pong stacks\" visibility=full color=0,0,0 altColor=0,0,0 priority=20" << endl;
 
-	// iterate through all strands, contigs and positions to find those positions where more than <coverage> reads on both strands overlap by 10 nucleotides
+	// iterate through all strands, contigs and positions to find those positions where more than <minStackHeight> reads on both strands overlap by 10 nucleotides
 	for (TCountsStrand::iterator contigPlusStrand = readCounts[STRAND_PLUS].begin(); contigPlusStrand != readCounts[STRAND_PLUS].end(); ++contigPlusStrand)
 	{
 		TCountsStrand::iterator contigMinusStrand = readCounts[STRAND_MINUS].find(contigPlusStrand->first);
@@ -355,7 +355,7 @@ int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, cons
 				TCountsContig::iterator positionMinusStrand = contigMinusStrand->second.find(positionPlusStrand->first + overlap);
 				if (positionMinusStrand != contigMinusStrand->second.end())
 				{
-					if ((positionPlusStrand->second.reads >= coverage) && (positionMinusStrand->second.reads >= coverage))
+					if ((positionPlusStrand->second.reads >= minStackHeight) && (positionMinusStrand->second.reads >= minStackHeight))
 					{
 						// find p-value given the heights of the two stacks
 						// if the p-value cannot be found (because the score is so bad), assume 1 as p-value
@@ -550,7 +550,7 @@ int main(int argc, char const ** argv)
 		return 1;
 	}
 	// find positions where reads on the minus strand overlap with the 5' ends of reads on the plus strand
-	if (findOverlappingReads(bedGraphFile, readCounts, bamNameStore, options.minCoverage, stackScoreMap, combinedStackScoreMap) != 0)
+	if (findOverlappingReads(bedGraphFile, readCounts, bamNameStore, options.minStackHeight, stackScoreMap, combinedStackScoreMap) != 0)
 		return 1;
 	bedGraphFile.close();
 	stopwatch("", options.verbosity);
