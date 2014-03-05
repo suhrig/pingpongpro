@@ -13,6 +13,7 @@
 #include <vector>
 #include <ctime>
 #include <fstream>
+#include <cmath>
 
 using namespace std;
 using namespace seqan;
@@ -42,25 +43,24 @@ struct AppOptions
 	{}
 };
 
+// types to store @SQ header lines of BAM/SAM files
+typedef StringSet<CharString> TNameStore;
+typedef Iterator<TNameStore>::Type TNameStoreIterator;
+
 // constants to refer to + and - strands throughout the program
 const unsigned int STRAND_PLUS = 0;
 const unsigned int STRAND_MINUS = 1;
 
 // for every locus (position) on the genome the following attributes are calculated:
 //  - reads: the number of reads which begin at this position
-//  - readsWithAAtBase10: how many of these reads have an Adenine or a Uracil at base 10 (which is typical for piRNAs)
-//  - readsWithNonTemplateBase: how many of these reads have terminal base which is different from the reference genome (also typical for piRNAs)
+//  - UAt5PrimeEnd: whether the reads of the stack have a U at the 5' end
 struct TCountsPosition
 {
-	unsigned int reads;
-	unsigned int readsWithAAtBase10;
-	unsigned int readsWithUAtBase10FromEnd;
-	unsigned int readsWithNonTemplateBase;
+	uint32_t reads: 31;
+	bool UAt5PrimeEnd: 1;
 	TCountsPosition():
 		reads(0),
-		readsWithAAtBase10(0),
-		readsWithUAtBase10FromEnd(0),
-		readsWithNonTemplateBase(0)
+		UAt5PrimeEnd(true)
 	{}
 };
 
@@ -70,14 +70,24 @@ typedef map< unsigned int, TCountsPosition > TCountsContig;
 typedef map< unsigned int, TCountsContig > TCountsStrand;
 typedef TCountsStrand TCountsGenome[2];
 
-// types to store @SQ header lines of BAM/SAM files
-typedef seqan::StringSet<seqan::CharString> TNameStore;
-typedef Iterator<TNameStore>::Type TNameStoreIterator;
+// true ping-pong stacks overlap by this many nt
+#define PING_PONG_OVERLAP 10
+
+// stacks with overlaps between MIN_ARBITRARY_OVERLAP and MAX_ARBITRARY_OVERLAP (except for PING_PONG_OVERLAP)
+// are used to estimate what is background noise
+#define MIN_ARBITRARY_OVERLAP 0
+#define MAX_ARBITRARY_OVERLAP 20
+
+// todo: description
+#define HEIGHT_SCORE_HISTOGRAM_BINS 1000
+#define LOCAL_HEIGHT_SCORE_HISTOGRAM_BINS 100
+typedef map< unsigned int, unsigned int > TScoreHistogram;
+typedef map< unsigned int, TScoreHistogram > TScoreHistogramsByOverlap;
+
+typedef map< unsigned int, double > TScoresByBin;
 
 // type to store a score for each stack height found in the input file
-typedef map< unsigned int, int64_t > TStackScoreMap;
-//type to store p-values for each combined stack score
-typedef map< int64_t, double > TCombinedStackScoreMap;
+typedef map< unsigned int, double > THeightScoreMap;
 
 // ==========================================================================
 // Functions
@@ -157,23 +167,22 @@ unsigned int stopwatch(const string &operation, unsigned int verbosity)
 	{
 		start = time(NULL);
 	}
-	if (verbosity > 3)
+	if (verbosity >= 3)
 	{
 		if (elapsedSeconds > 0)
-			cerr << "done (" << elapsedSeconds << " seconds)";
+			cerr << "done (" << elapsedSeconds << " seconds)" << endl;
 		else
-			cerr << operation << " ... " << endl;
+			cerr << operation << " ... ";
 	}
 	return elapsedSeconds;
 }
 
 // Function which sums up the number of reads that start at a given position in the genome.
-// Additionally, it counts the number of reads with an A/U at base 10 as well as
-// the number of reads with a terminal base different from the reference genome.
-// The latter two figures help identify the significance of a putative piRNA signature.
+// Additionally, it counts the number of reads with uridine at the 5' end.
 // Parameters:
 //   bamFile: the BAM/SAM file from where to load the reads
 //   readCounts: stats for positions were reads on the minus strand overlap the 5' ends of reads on the plus strand
+// todo: document parameters
 int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCounts, unsigned int minReadLength, unsigned int maxReadLength)
 {
 	TCountsPosition *position;
@@ -192,159 +201,92 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCounts, unsigned 
 		    (length(record.seq) >= minReadLength) && (length(record.seq) <= maxReadLength)) // skip reads which are not within the specified length range
 
 		{
-			// calculate alignment length using CIGAR string, i.e., distance from first matching base on the reference to the last matching base on the reference
+			// calculate start of alignment using CIGAR string
+			size_t clippedBases = 0;
+			if (record.cigar[0].operation == 'S')
+				clippedBases = record.cigar[0].count;
+
+			// calculate length of alignment using CIGAR string
 			size_t alignmentLength = 0;
 			for (unsigned int cigarIndex = 0; cigarIndex < length(record.cigar); ++cigarIndex)
-				if ((record.cigar[cigarIndex].operation == 'M') || (record.cigar[cigarIndex].operation == 'N') || (record.cigar[cigarIndex].operation == 'D') || (record.cigar[cigarIndex].operation == '=') || (record.cigar[cigarIndex].operation == 'X'))
+			{
+				if ((record.cigar[cigarIndex].operation == 'M') || (record.cigar[cigarIndex].operation == 'N') || (record.cigar[cigarIndex].operation == 'D') || (record.cigar[cigarIndex].operation == '=') || (record.cigar[cigarIndex].operation == 'X')) // these CIGAR elements indicate alignment
 					alignmentLength += record.cigar[cigarIndex].count;
+			}
 
 			if (hasFlagRC(record)) // read maps to minus strand
 			{
-				position = &(readCounts[STRAND_MINUS][record.rID][record.beginPos+alignmentLength]);
-				if ((record.cigar[0].operation == 'S') && (record.cigar[0].count == 1))
-					position->readsWithNonTemplateBase++;
+				position = &(readCounts[STRAND_MINUS][record.rID][record.beginPos+alignmentLength]); // get a pointer to counter of the position of the read
+				if ((record.seq[clippedBases+alignmentLength] == 'A') || (record.seq[clippedBases+alignmentLength] == 'a')) // check if last base is an A
+					position->UAt5PrimeEnd = true;
 			}
 			else // read maps to plus strand
 			{
-				position = &(readCounts[STRAND_PLUS][record.rID][record.beginPos]);
-				if ((record.cigar[length(record.cigar)-1].operation == 'S') && (record.cigar[length(record.cigar)-1].count == 1))
-					position->readsWithNonTemplateBase++;
+				position = &(readCounts[STRAND_PLUS][record.rID][record.beginPos]); // get a pointer to the counter of the position of the read
+				if ((record.seq[clippedBases] == 'T') || (record.seq[clippedBases] == 't')) // check if first base is a U
+					position->UAt5PrimeEnd = true;
 			}
 
-			// increase read counters for the given position on the genome
+			// increase read counter for the given position on the genome
 			position->reads++;
-
-			// check if 10th base is an Adenine or if the 10th base from the end of the read is a Uracil
-			if (alignmentLength >= 10)
-			{
-				if ((record.seq[9] == 'A') || (record.seq[9] == 'a'))
-					position->readsWithAAtBase10++;
-				if ((record.seq[length(record.seq)-10] == 'T') || (record.seq[length(record.seq)-10] == 't'))
-					position->readsWithUAtBase10FromEnd++;
-			}
 		}
 	}
 
 	return 0;
 }
 
-void calculateStackScores(TCountsGenome &readCounts, TStackScoreMap &stackScoreMap)
+// todo: description
+/*void calculateFDR(TScoreHistogramsByOverlap &scoreHistogramsByOverlap, TScoresByBin &scoresByBin, unsigned int bins, unsigned int testOverlap)
+{
+	map< unsigned int, double> means;
+	map< unsigned int, double> stddevs;
+
+	// calculate mean for every bin
+	for (unsigned int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
+		if (overlap != PING_PONG_OVERLAP) // ignore ping-pong stacks, since they would skew the result
+			if (overlap != testOverlap) // skip stacks with the overlap that we are testing
+				for (unsigned int bin = 0; bin < bins; bin++)
+					means[bin] += scoreHistogramsByOverlap[overlap][bin];
+	for (unsigned int bin = 0; bin < bins; bin++)
+		means[bin] /= MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP + 1;
+
+	// calculate standard deviation for every bin
+	for (unsigned int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
+		if (overlap != PING_PONG_OVERLAP) // ignore ping-pong stacks, since they would skew the result
+			if (overlap != testOverlap) // skip stacks with the overlap that we are testing
+				for (unsigned int bin = 0; bin < bins; bin++)
+					stddevs[bin] += pow(scoreHistogramsByOverlap[overlap][bin] - means[bin], 2);
+	for (unsigned int bin = 0; bin < bins; bin++)
+		stddevs[bin] = sqrt(1 / (MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP) * stddevs[bin]);
+
+	// calculate score for each bin, based on divergence from mean and variance
+	for (unsigned int bin = 0; bin < bins; bin++)
+	{
+		double mean = means[bin];
+		double stddev = stddevs[bin];
+			unsigned int value = scoreHistogramsByOverlap[testOverlap][bin];
+		scoresByBin[bin] = statisticalSignificance(mean, stddev, value) * value / (value + mean);
+	}
+}*/
+
+// convert stack heights to scores
+// todo: document parameters
+void mapHeightsToScores(TCountsGenome &readCounts, THeightScoreMap &heightScoreMap)
 {
 	// iterate through all strands, contigs and positions to count how many stacks there are of any given height
 	for (unsigned int strand = STRAND_PLUS; strand <= STRAND_MINUS; ++strand)
 		for (TCountsStrand::iterator contig = readCounts[strand].begin(); contig != readCounts[strand].end(); ++contig)
 			for (TCountsContig::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
-				stackScoreMap[position->second.reads] += 1;
+				heightScoreMap[position->second.reads] += 1;
 }
 
-void calculateCombinedStackScores(TCountsGenome &readCounts, TStackScoreMap &stackScoreMap, TCombinedStackScoreMap &combinedStackScoreMap)
+// todo: description
+void calculateHeightScoreHistograms(TCountsGenome &readCounts, THeightScoreMap &heightScoreMap, TScoreHistogramsByOverlap &scoreHistogramsByOverlap)
 {
-	for (int overlap = -10; overlap <= 30; overlap++)
-	{
-		// ignore overlaps close to 10 nt
-		// such overlaps often result from the slicer enzyme not cutting after exactly 10 nt
-		if ((overlap >= 7) && (overlap <= 13))
-			continue;
+	// the highest possible score is that of two overlapping stacks which both have a height of just 1 read
+	const double maxHeightScore = log10(heightScoreMap[1] * heightScoreMap[1]);
 
-		// iterate through all strands, contigs and positions to find those positions where stacks overlap by <overlap> nucleotides
-		for (TCountsStrand::iterator contigPlusStrand = readCounts[STRAND_PLUS].begin(); contigPlusStrand != readCounts[STRAND_PLUS].end(); ++contigPlusStrand)
-		{
-			TCountsStrand::iterator contigMinusStrand = readCounts[STRAND_MINUS].find(contigPlusStrand->first);
-			if (contigMinusStrand != readCounts[STRAND_MINUS].end())
-			{
-				for (TCountsContig::iterator positionPlusStrand = contigPlusStrand->second.begin(); positionPlusStrand != contigPlusStrand->second.end(); ++positionPlusStrand)
-				{
-					TCountsContig::iterator positionMinusStrand = contigMinusStrand->second.find(positionPlusStrand->first + overlap);
-					if (positionMinusStrand != contigMinusStrand->second.end())
-						// multiply scores of individual stacks on opposite strand to obtain combined stack score
-						// then, increase counter which keeps track of how many loci are found with this combined stack score
-						combinedStackScoreMap[stackScoreMap[positionPlusStrand->second.reads]*stackScoreMap[positionMinusStrand->second.reads]]++;
-				}
-			}
-		}
-	}
-
-	double cumulativeCount = 0;
-	for (TCombinedStackScoreMap::iterator combinedStackScore = combinedStackScoreMap.begin(); combinedStackScore != combinedStackScoreMap.end(); ++combinedStackScore)
-	{
-		// count how many combined stacks were found in total
-		// later, we divide the number of occurrences of stacks with a certain combined stack score by this number to obtain empirical probabilities
-		cumulativeCount += combinedStackScore->second;
-
-		// overwrite the number of stacks having a certain combined stack score with the cumulative count,
-		// so that we can directly query the combinedStackScoreMap for scores <= a given score
-		// like so, combinedStackScoreMap[12345] then gives the number of stacks with a score <= 12345 (and not just stacks with a score == 12345)
-		combinedStackScore->second = cumulativeCount;
-	}
-
-	// divide absolute counts by the total, so that we get empirical probabilites
-	for (TCombinedStackScoreMap::iterator combinedStackScore = combinedStackScoreMap.begin(); combinedStackScore != combinedStackScoreMap.end(); ++combinedStackScore)
-		combinedStackScore->second /= cumulativeCount;
-}
-
-// find those positions on the genome where reads on opposite strands overlap by 10 nucleotides
-int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, const TNameStore &bamNameStore, unsigned int minStackHeight, TStackScoreMap &stackScoreMap, TCombinedStackScoreMap &combinedStackScoreMap)
-{
-	const int overlap = 10;
-
-	// write one bedGraph track per strand
-	for (unsigned int strand = STRAND_PLUS; strand <= STRAND_MINUS; ++strand)
-	{
-		bedGraphFile
-			<< "track type=bedGraph name=\"stacks on "
-			<< ((strand == STRAND_PLUS) ? "+" : "-")
-			<< " strand\" description=\"height of ping-pong stacks on the "
-			<< ((strand == STRAND_PLUS) ? "+" : "-")
-			<< " strand\" visibility=full color=0,0,0 altColor=0,0,0 priority=20" << endl;
-
-		// iterate through all strands, contigs and positions to find those positions where more than <minStackHeight> reads on both strands overlap by 10 nucleotides
-		for (TCountsStrand::iterator contigPlusStrand = readCounts[STRAND_PLUS].begin(); contigPlusStrand != readCounts[STRAND_PLUS].end(); ++contigPlusStrand)
-		{
-			TCountsStrand::iterator contigMinusStrand = readCounts[STRAND_MINUS].find(contigPlusStrand->first);
-			if (contigMinusStrand != readCounts[STRAND_MINUS].end())
-			{
-				for (TCountsContig::iterator positionPlusStrand = contigPlusStrand->second.begin(); positionPlusStrand != contigPlusStrand->second.end(); ++positionPlusStrand)
-				{
-					TCountsContig::iterator positionMinusStrand = contigMinusStrand->second.find(positionPlusStrand->first + overlap);
-					if (positionMinusStrand != contigMinusStrand->second.end())
-					{
-						if ((positionPlusStrand->second.reads >= minStackHeight) && (positionMinusStrand->second.reads >= minStackHeight))
-						{
-							/*cout
-								<< bamNameStore[contigPlusStrand->first] << "\t"
-								<< (positionPlusStrand->first+1) << "\t"
-								<< STRAND_PLUS << "\t"
-								<< positionPlusStrand->second.reads << "\t"
-								<< positionPlusStrand->second.readsWithAAtBase10 << "\t"
-								<< positionPlusStrand->second.readsWithUAtBase10FromEnd << "\t"
-								<< positionPlusStrand->second.readsWithNonTemplateBase << "\t"
-								<< STRAND_MINUS << "\t"
-								<< positionMinusStrand->second.reads << "\t"
-								<< positionMinusStrand->second.readsWithAAtBase10 << "\t"
-								<< positionMinusStrand->second.readsWithUAtBase10FromEnd << "\t"
-								<< positionMinusStrand->second.readsWithNonTemplateBase
-								<< endl;*/
-							bedGraphFile
-								<< bamNameStore[contigPlusStrand->first] << " "
-								<< positionPlusStrand->first << " "
-								<< positionPlusStrand->first+1 << " "
-								<< ((strand == STRAND_PLUS) ? positionPlusStrand->second.reads : positionMinusStrand->second.reads) << endl;
-							//todo: test error handling
-							if (bedGraphFile.bad())
-							{
-								cerr << "Failed to write bedGraph record" << endl;
-								return 1;
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	bedGraphFile << "track type=bedGraph name=\"scores for ping-pong stacks\" description=\"scores for ping-pong stacks\" visibility=full color=0,0,0 altColor=0,0,0 priority=20" << endl;
-
-	// iterate through all strands, contigs and positions to find those positions where more than <minStackHeight> reads on both strands overlap by 10 nucleotides
+	// iterate through all strands, contigs and positions to find those positions where a stack on the plus strand overlaps a stack on the minus strand by <overlap> nt
 	for (TCountsStrand::iterator contigPlusStrand = readCounts[STRAND_PLUS].begin(); contigPlusStrand != readCounts[STRAND_PLUS].end(); ++contigPlusStrand)
 	{
 		TCountsStrand::iterator contigMinusStrand = readCounts[STRAND_MINUS].find(contigPlusStrand->first);
@@ -352,27 +294,109 @@ int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, cons
 		{
 			for (TCountsContig::iterator positionPlusStrand = contigPlusStrand->second.begin(); positionPlusStrand != contigPlusStrand->second.end(); ++positionPlusStrand)
 			{
-				TCountsContig::iterator positionMinusStrand = contigMinusStrand->second.find(positionPlusStrand->first + overlap);
-				if (positionMinusStrand != contigMinusStrand->second.end())
+				for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
 				{
-					if ((positionPlusStrand->second.reads >= minStackHeight) && (positionMinusStrand->second.reads >= minStackHeight))
+					TCountsContig::iterator positionMinusStrand = contigMinusStrand->second.find(positionPlusStrand->first + overlap);
+					if (positionMinusStrand != contigMinusStrand->second.end())
 					{
-						// find p-value given the heights of the two stacks
-						// if the p-value cannot be found (because the score is so bad), assume 1 as p-value
-						TCombinedStackScoreMap::iterator combinedStackScore = combinedStackScoreMap.lower_bound(stackScoreMap[positionPlusStrand->second.reads] * stackScoreMap[positionMinusStrand->second.reads]);
-						double pvalue = (combinedStackScore != combinedStackScoreMap.end()) ? combinedStackScore->second : 1;
+						// calculate score based on heights of overlapping stacks
+						double heightScore = heightScoreMap[positionPlusStrand->second.reads] * heightScoreMap[positionMinusStrand->second.reads];
+						// find the bin for the score
+						unsigned int bin =
+							static_cast<int>(0.5 // add 0.5 for arithmetic rounding when casting double to int
+							+ log10(heightScore) // take logarithm of score
+							/ maxHeightScore * (HEIGHT_SCORE_HISTOGRAM_BINS - 1)); // assign every score to a bin
+						scoreHistogramsByOverlap[overlap][bin]++; // increase bin counter
+					}
+				}
+			}
+		}
+	}
+}
 
-						bedGraphFile
-							<< bamNameStore[contigPlusStrand->first] << " "
-							<< positionPlusStrand->first << " "
-							<< positionPlusStrand->first+1 << " "
-							<< (1 - pvalue) << endl; // invert p-values for graphs, so that high bars are a good thing
-						//todo: test error handling
-						if (bedGraphFile.bad())
+// todo: description
+void calculateLocalHeightScoreHistograms(TCountsGenome &readCounts, TScoreHistogramsByOverlap &scoreHistogramsByOverlap)
+{
+	// iterate through all strands, contigs and positions to find those positions where a stack on the plus strand overlaps a stack on the minus strand by <overlap> nt
+	for (TCountsStrand::iterator contigPlusStrand = readCounts[STRAND_PLUS].begin(); contigPlusStrand != readCounts[STRAND_PLUS].end(); ++contigPlusStrand)
+	{
+		TCountsStrand::iterator contigMinusStrand = readCounts[STRAND_MINUS].find(contigPlusStrand->first);
+		if (contigMinusStrand != readCounts[STRAND_MINUS].end())
+		{
+			for (TCountsContig::iterator positionPlusStrand = contigPlusStrand->second.begin(); positionPlusStrand != contigPlusStrand->second.end(); ++positionPlusStrand)
+			{
+				map< int, unsigned int > stackHeightsInVicinity;
+				double mean = 0;
+				unsigned int max = 0;
+				for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
+				{
+					TCountsContig::iterator positionMinusStrand = contigMinusStrand->second.find(positionPlusStrand->first + overlap);
+					if (positionMinusStrand != contigMinusStrand->second.end())
+					{
+						stackHeightsInVicinity[overlap] = positionMinusStrand->second.reads;
+						mean += positionMinusStrand->second.reads;
+						if (positionMinusStrand->second.reads > max)
+							max = positionMinusStrand->second.reads;
+					}
+				}
+				mean /= (MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP + 1);
+
+				for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
+				{
+					// calculate score based on how much higher the stack is compared to the stacks in the vicinity
+					double localHeightScore = (stackHeightsInVicinity[overlap] - (mean - stackHeightsInVicinity[overlap]/(MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP + 1))) / max;
+					// find bin for score
+					unsigned int bin =
+						static_cast<int>(0.5 // add 0.5 for arithmetic rounding when casting double to int
+						+ (localHeightScore + 1) / 2 // score can take values between -1 and +1 => normalize score to values between 0 and 1
+						* (LOCAL_HEIGHT_SCORE_HISTOGRAM_BINS - 1) // assign every normalized score to a bin
+						);
+					// increase the counter for stacks falling into the bin returned by getHeightScoreBin()
+					scoreHistogramsByOverlap[overlap][bin]++;
+				}
+			}
+		}
+	}
+}
+
+/*int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, const TNameStore &bamNameStore, unsigned int minStackHeight, THeightScoreMap &heightScoreMap, TCombinedStackScoreMap &combinedStackScoreMap)
+{
+	for (unsigned int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
+	{
+
+		// iterate through all strands, contigs and positions to find those positions where more than <minStackHeight> reads on both strands overlap by 10 nucleotides
+		for (TCountsStrand::iterator contigPlusStrand = readCounts[STRAND_PLUS].begin(); contigPlusStrand != readCounts[STRAND_PLUS].end(); ++contigPlusStrand)
+		{
+			TCountsStrand::iterator contigMinusStrand = readCounts[STRAND_MINUS].find(contigPlusStrand->first);
+			if (contigMinusStrand != readCounts[STRAND_MINUS].end())
+			{
+			const unsigned int slidingWindowSize = 1000;
+			bool slidingWindow[slidingWindowSize] = {false};
+			unsigned int stacksWithinWindow = 0;
+			unsigned int slidingWindowPosition = 0;
+
+				for (TCountsContig::iterator positionPlusStrand = contigPlusStrand->second.begin(); positionPlusStrand != contigPlusStrand->second.end(); ++positionPlusStrand)
+				{
+					TCountsContig::iterator positionMinusStrand = contigMinusStrand->second.find(positionPlusStrand->first + overlap);
+					if (positionMinusStrand != contigMinusStrand->second.end())
+					{
+					
+					while ((slidingWindowPosition < positionPlusStrand->first) && (stacksWithinWindow > 0))
+					{
+						++slidingWindowPosition; // move sliding window by 1 nt
+						if (slidingWindow[slidingWindowPosition % slidingWindowSize] == true) // a stack fell out of the sliding window
 						{
-							cerr << "Failed to write bedGraph record" << endl;
-							return 1;
+							slidingWindow[slidingWindowPosition % slidingWindowSize] = false; // there is no stack at the position that entered the sliding window
+							--stacksWithinWindow;
 						}
+						if (slidingWindow[(slidingWindowPosition + slidingWindowSize/2) % slidingWindowSize] == true) // there is a stack in the center of the sliding window
+							bedGraphFile << slidingWindowPosition - slidingWindowSize/2 - 1 << " " << stacksWithinWindow << endl; // output the number of stacks surrounding the center stack
+					}
+					slidingWindowPosition = positionPlusStrand->first;
+					slidingWindow[slidingWindowPosition % slidingWindowSize] = true;
+					++stacksWithinWindow;
+					//todo: stacks at contig ends are ignored
+
 					}
 				}
 			}
@@ -380,87 +404,67 @@ int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, cons
 	}
 
 	return 0;
-}
+}*/
 
-struct TAggregatedCountsPosition
+/*unsigned int getTotalScoreBin(double heightScore)
 {
-	double numberOfPositions;
-	double readsWithAAtBase10;
-	double readsWithUAtBase10FromEnd;
-	double readsWithNonTemplateBase;
-	TAggregatedCountsPosition():
-		numberOfPositions(0),
-		readsWithAAtBase10(0),
-		readsWithUAtBase10FromEnd(0),
-		readsWithNonTemplateBase(0)
-	{}
-};
+	double bin;
+	return static_cast<int>(bin + 0.5); // +0.5 ensures that float variable is rounded correctly when casting
+}*/
 
 // find those positions on the genome where reads on opposite strands overlap by 10 nucleotides
-void aggregateOverlappingReadsByCoverage(TCountsGenome &readCounts, const unsigned int upstreamStrand)
+// todo: document parameters
+/*int findOverlappingReads(ofstream &bedGraphFile, TCountsGenome &readCounts, const TNameStore &bamNameStore, unsigned int minStackHeight, THeightScoreMap &heightScoreMap, TCombinedStackScoreMap &combinedStackScoreMap)
 {
-	// set downstream strand to the opposite of upstream strand
-	unsigned int downstreamStrand = (upstreamStrand == STRAND_PLUS) ? STRAND_MINUS : STRAND_PLUS;
-
-	unsigned int coverage = 1;
-	
-	TAggregatedCountsPosition aggregatedCounts[2];
-	do
+	// find those positions where reads on both strands overlap by <overlap> nucleotides
+	for (unsigned int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
 	{
-		// reset counters
-		aggregatedCounts[upstreamStrand] = aggregatedCounts[downstreamStrand] = TAggregatedCountsPosition();
+		if (overlap == PING_PONG_OVERLAP)
+			continue;
 
-		// iterate through all strands, contigs and positions to find those positions where more than <coverage> reads on opposite strands overlap by 10 nucleotides
-		for (TCountsStrand::iterator contig = readCounts[downstreamStrand].begin(); contig != readCounts[downstreamStrand].end(); ++contig)
+		// iterate through all contigs on the plus strand
+		for (TCountsStrand::iterator contigPlusStrand = readCounts[STRAND_PLUS].begin(); contigPlusStrand != readCounts[STRAND_PLUS].end(); ++contigPlusStrand)
 		{
-			TCountsStrand::iterator contigOnOppositeStrand = readCounts[upstreamStrand].find(contig->first);
-			if (contigOnOppositeStrand != readCounts[upstreamStrand].end())
+			// check if there are any stacks for the given contig on the minus strand
+			TCountsStrand::iterator contigMinusStrand = readCounts[STRAND_MINUS].find(contigPlusStrand->first);
+			if (contigMinusStrand != readCounts[STRAND_MINUS].end())
 			{
-				for (TCountsContig::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
+				// iterate through all stacks on the plus strand
+				for (TCountsContig::iterator positionPlusStrand = contigPlusStrand->second.begin(); positionPlusStrand != contigPlusStrand->second.end(); ++positionPlusStrand)
 				{
-					TCountsContig::iterator positionOnOppositeStrand = contigOnOppositeStrand->second.find(position->first + 10);
-					if (positionOnOppositeStrand != contigOnOppositeStrand->second.end())
+					// check if there is a stack on the minus strand which overlaps with the stack on the plus strand by <overlap> nucleotides
+					TCountsContig::iterator positionMinusStrand = contigMinusStrand->second.find(positionPlusStrand->first + overlap);
+					if (positionMinusStrand != contigMinusStrand->second.end())
 					{
-						if ((position->second.reads >= coverage) && (positionOnOppositeStrand->second.reads >= coverage))
-						{
-//							if (position->second.reads < coverage+10)
-//							{
-								aggregatedCounts[downstreamStrand].numberOfPositions++;
-								aggregatedCounts[downstreamStrand].readsWithAAtBase10 += (double) position->second.readsWithAAtBase10 / position->second.reads;
-								aggregatedCounts[downstreamStrand].readsWithUAtBase10FromEnd += (double) position->second.readsWithUAtBase10FromEnd / position->second.reads;
-								aggregatedCounts[downstreamStrand].readsWithNonTemplateBase += (double) position->second.readsWithNonTemplateBase / position->second.reads;
-								aggregatedCounts[upstreamStrand].numberOfPositions++;
-								aggregatedCounts[upstreamStrand].readsWithAAtBase10 += (double) positionOnOppositeStrand->second.readsWithAAtBase10 / positionOnOppositeStrand->second.reads;
-								aggregatedCounts[upstreamStrand].readsWithUAtBase10FromEnd += (double) positionOnOppositeStrand->second.readsWithUAtBase10FromEnd / positionOnOppositeStrand->second.reads;
-								aggregatedCounts[upstreamStrand].readsWithNonTemplateBase += (double) positionOnOppositeStrand->second.readsWithNonTemplateBase / positionOnOppositeStrand->second.reads;
-//							}
-						}
-						else
-						{
-							// free memory of positions that we won't need again
-							contig->second.erase(position);
-							contigOnOppositeStrand->second.erase(positionOnOppositeStrand);
-						}
 					}
 				}
 			}
 		}
+	}
 
-		cout
-			<< coverage << "\t"
-			<< downstreamStrand << "\t"
-			<< aggregatedCounts[downstreamStrand].numberOfPositions << "\t"
-			<< aggregatedCounts[downstreamStrand].readsWithAAtBase10/aggregatedCounts[downstreamStrand].numberOfPositions << "\t"
-			<< aggregatedCounts[downstreamStrand].readsWithUAtBase10FromEnd/aggregatedCounts[downstreamStrand].numberOfPositions << "\t"
-			<< aggregatedCounts[downstreamStrand].readsWithNonTemplateBase/aggregatedCounts[downstreamStrand].numberOfPositions << "\t"
-			<< upstreamStrand << "\t"
-			<< aggregatedCounts[upstreamStrand].numberOfPositions << "\t"
-			<< aggregatedCounts[upstreamStrand].readsWithAAtBase10/aggregatedCounts[upstreamStrand].numberOfPositions << "\t"
-			<< aggregatedCounts[upstreamStrand].readsWithUAtBase10FromEnd/aggregatedCounts[upstreamStrand].numberOfPositions << "\t"
-			<< aggregatedCounts[upstreamStrand].readsWithNonTemplateBase/aggregatedCounts[upstreamStrand].numberOfPositions
-			<< endl;
-		coverage += 10;
-	} while (aggregatedCounts[downstreamStrand].numberOfPositions > 0);
+	return 0;
+}*/
+
+//todo: support log of y-axis
+//todo: x-axis labels
+void plotHistograms(TScoreHistogramsByOverlap &scoreHistogramsByOverlap, unsigned int binCount, string fileName)
+{
+	ofstream rScript(toCString(fileName + ".R"));
+	for (unsigned int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
+	{
+		rScript << "png(\"" << fileName << "_" << overlap << ".png\")" << endl;
+		rScript << "barplot(c(";
+		//if (overlap != PING_PONG_OVERLAP) // ignore ping-pong stacks, since they would skew the result
+			for (unsigned int bin = 0; bin < binCount - 1; bin++)
+			{
+				if (bin % 100 == 0)
+					rScript << endl; // insert a line-break every once in a while, because R cannot parse very long lines
+				rScript << scoreHistogramsByOverlap[overlap][bin] << ", ";
+			}
+		rScript << scoreHistogramsByOverlap[overlap][binCount - 1] << "))" << endl;
+		rScript << "dev.off()" << endl;
+	}
+	rScript.close();
 }
 
 // program entry point
@@ -534,15 +538,24 @@ int main(int argc, char const ** argv)
 		stopwatch("", options.verbosity);
 	}
 
-	stopwatch("Calculating stack scores", options.verbosity);
-	TStackScoreMap stackScoreMap;
-	calculateStackScores(readCounts, stackScoreMap);
+	stopwatch("Calculating scores for stack heights", options.verbosity);
+	THeightScoreMap heightScoreMap;
+	mapHeightsToScores(readCounts, heightScoreMap);
 	stopwatch("", options.verbosity);
 
-	TCombinedStackScoreMap combinedStackScoreMap;
-	calculateCombinedStackScores(readCounts, stackScoreMap, combinedStackScoreMap);
+	stopwatch("Generating histograms of stack heights", options.verbosity);
+	TScoreHistogramsByOverlap heightScoreHistogramsByOverlap;
+	calculateHeightScoreHistograms(readCounts, heightScoreMap, heightScoreHistogramsByOverlap);
+	plotHistograms(heightScoreHistogramsByOverlap, HEIGHT_SCORE_HISTOGRAM_BINS, "height_score");
+	stopwatch("", options.verbosity);
 
-	stopwatch("Scanning for overlapping reads", options.verbosity);
+	stopwatch("Generating histograms of local stack heights", options.verbosity);
+	TScoreHistogramsByOverlap localHeightScoreHistogramsByOverlap;
+	calculateLocalHeightScoreHistograms(readCounts, localHeightScoreHistogramsByOverlap);
+	plotHistograms(localHeightScoreHistogramsByOverlap, LOCAL_HEIGHT_SCORE_HISTOGRAM_BINS, "local_height_score");
+	stopwatch("", options.verbosity);
+
+/*	stopwatch("Scanning for overlapping reads", options.verbosity);
 	ofstream bedGraphFile(toCString(options.outputBedGraph));
 	if (bedGraphFile.fail())
 	{
@@ -550,15 +563,9 @@ int main(int argc, char const ** argv)
 		return 1;
 	}
 	// find positions where reads on the minus strand overlap with the 5' ends of reads on the plus strand
-	if (findOverlappingReads(bedGraphFile, readCounts, bamNameStore, options.minStackHeight, stackScoreMap, combinedStackScoreMap) != 0)
+	if (findOverlappingReads(bedGraphFile, readCounts, bamNameStore, options.minStackHeight, heightScoreMap, combinedStackScoreMap) != 0)
 		return 1;
 	bedGraphFile.close();
-	stopwatch("", options.verbosity);
-
-/*	stopwatch("Aggregating overlapping reads by coverage", options.verbosity);
-
-	aggregateOverlappingReadsByCoverage(readCounts, STRAND_MINUS);
-
 	stopwatch("", options.verbosity);
 */
 	return 0;
