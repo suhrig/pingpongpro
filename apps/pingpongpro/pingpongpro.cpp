@@ -541,17 +541,17 @@ void plotHistograms(TScoreHistogramsByOverlap &scoreHistogramsByOverlap, unsigne
 	rScript
 		<< "options(bitmapType='cairo')" << endl
 		<< "png('" << fileName << ".png')" << endl
-		<< "plot(0, 0, xlim=c(0," << binCount << "), ylim=c(0,max(histograms)), type='n', xlab='" << title << "', ylab='" << logFunctionOpen << "Frequency" << logFunctionClose << "', xaxt='n')" << endl
-		<< "axis(1, at=c(0,1,2,3)+0.5, labels=c('U, + strand', 'not U, + strand', 'U, - strand', 'not U, - strand'))" << endl
+		<< "plot(0, 0, xlim=c(0," << logFunctionOpen << binCount << logFunctionClose << "), ylim=c(0,max(histograms)), type='n', xlab='" << title << "', ylab='" << logFunctionOpen << "Frequency" << logFunctionClose << "', xaxt='n')" << endl
+		<< "axis(1, at=c(0,1,2,3)+0.5, labels=c('+ strand, U', '+ strand, not U', '- strand, U', '- strand, not U'))" << endl
 		// draw bars for arbitrary overlaps
 		<< "for (overlap in " << MIN_ARBITRARY_OVERLAP << ":" << MAX_ARBITRARY_OVERLAP << ")" << endl
 		<< "	if (overlap != 10)" << endl
-		<< "		barplot(" << logFunctionOpen << "histograms[,paste('overlap', overlap, sep='')]" << logFunctionClose << ", col=rgb(0,0,0,alpha=0.1), border=NA, axes=FALSE, add=TRUE)" << endl
+		<< "		barplot(" << logFunctionOpen << "histograms[,paste('overlap', overlap, sep='')]" << logFunctionClose << ", col=rgb(0,0,0,alpha=0.1), border=NA, axes=FALSE, add=TRUE, width=1, space=0)" << endl
 		// draw a red line for ping-pong overlaps
 		<< "lines(0:" << binCount << ", " << logFunctionOpen << "c(histograms[,'overlap10'], histograms[nrow(histograms),'overlap10'])" << logFunctionClose << ", col='red', type='s')" << endl
 		// draw legend
 		<< "legend(x='top', c('10 nt overlap', 'arbitrary overlaps'), col=c('red', 'black'), ncol=2, lwd=c(3,3), xpd=TRUE, inset=-0.1)" << endl
-		<< "dev.off()" << endl;
+		<< "garbage <- dev.off()" << endl;
 
 	// close R script
 	rScript.close();
@@ -662,7 +662,7 @@ int main(int argc, char const ** argv)
 		stopwatch("Generating R plots", options.verbosity);
 		plotHistograms(heightScoreHistogramsByOverlap, HEIGHT_SCORE_HISTOGRAM_BINS, "Height Score", true);
 		plotHistograms(localHeightScoreHistogramsByOverlap, LOCAL_HEIGHT_SCORE_HISTOGRAM_BINS, "Local Height Score", false);
-		plotHistograms(baseScoreHistogramsByOverlap, 4, "Base Score", false);
+		plotHistograms(baseScoreHistogramsByOverlap, 4, "Base Content at 5-Prime End", false);
 		stopwatch("", options.verbosity);
 	}
 
