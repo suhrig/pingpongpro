@@ -68,8 +68,8 @@ struct TCountsPosition
 {
 	unsigned int reads: 31;
 	bool UAt5PrimeEnd: 1;
-	unsigned int heightScoreBin: 10;
-	unsigned int localHeightScoreBin: 7;
+	unsigned int heightScoreBin: 10; // must be big enough to hold HEIGHT_SCORE_HISTOGRAM_BINS
+	unsigned int localHeightScoreBin: 7; // must be big enough to hold LOCAL_HEIGHT_SCORE_HISTOGRAM_BINS
 	TCountsPosition():
 		reads(0),
 		UAt5PrimeEnd(false)
@@ -93,7 +93,8 @@ typedef TCountsStrand TCountsGenome[2];
 // todo: description
 #define HEIGHT_SCORE_HISTOGRAM_BINS 1000
 #define LOCAL_HEIGHT_SCORE_HISTOGRAM_BINS 100
-typedef map< unsigned int, unsigned int > TScoreHistogram;
+#define CLUSTER_SCORE_HISTOGRAM_BINS 100
+typedef map< unsigned int, double > TScoreHistogram;
 typedef map< unsigned int, TScoreHistogram > TScoreHistogramsByOverlap;
 
 #define BASE_SCORE_PLUS_STRAND_URIDINE 0
@@ -158,7 +159,13 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	options.bedGraph = isSet(parser, "bedgraph");
 	options.inputFiles.resize(getOptionValueCount(parser, "input")); // store input files in vector
 	for (vector< string >::size_type i = 0; i < options.inputFiles.size(); i++)
+	{
 		getOptionValue(options.inputFiles[i], parser, "input", i);
+		if (options.inputFiles[i] == "-")
+			options.inputFiles[i] = "/dev/stdin";
+	}
+	if (options.inputFiles.size() == 0)
+		options.inputFiles.push_back("/dev/stdin"); // read from stdin, if no input file is given
 	getOptionValue(options.minStackHeight, parser, "min-stack-height");
 	getOptionValue(options.minReadLength, parser, "min-read-length");
 	getOptionValue(options.maxReadLength, parser, "max-read-length");
@@ -199,6 +206,10 @@ unsigned int stopwatch(const string &operation, unsigned int verbosity)
 			cerr << operation << " ... ";
 	}
 	return elapsedSeconds;
+}
+unsigned int stopwatch(unsigned int verbosity)
+{
+	return stopwatch("", verbosity);
 }
 
 // Function which sums up the number of reads that start at a given position in the genome.
@@ -259,9 +270,7 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCounts, unsigned 
 	return 0;
 }
 
-// todo: description
-/*void calculateFDR(TScoreHistogramsByOverlap &scoreHistogramsByOverlap, TScoresByBin &scoresByBin, unsigned int bins, unsigned int testOverlap)
-{
+/*{
 	map< unsigned int, double> means;
 	map< unsigned int, double> stddevs;
 
@@ -292,6 +301,20 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCounts, unsigned 
 		scoresByBin[bin] = statisticalSignificance(mean, stddev, value) * value / (value + mean);
 	}
 }*/
+
+// convert absolute counts to relative frequencies
+// todo: parameters
+void getRelativeFrequencies(TScoreHistogramsByOverlap &scoreHistogramsByOverlap)
+{
+	for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
+	{
+		double total = 0;
+		for (TScoreHistogram::iterator bar = scoreHistogramsByOverlap[overlap].begin(); bar != scoreHistogramsByOverlap[overlap].end(); ++bar)
+			total += bar->second;
+		for (TScoreHistogram::iterator bar = scoreHistogramsByOverlap[overlap].begin(); bar != scoreHistogramsByOverlap[overlap].end(); ++bar)
+			bar->second /= total;
+	}
+}
 
 // convert stack heights to scores
 // todo: document parameters
@@ -327,7 +350,8 @@ void calculateHeightScoreHistograms(TCountsGenome &readCounts, THeightScoreMap &
 						double heightScore = heightScoreMap[positionPlusStrand->second.reads] * heightScoreMap[positionMinusStrand->second.reads];
 						// find the bin for the score
 						unsigned int bin =
-							static_cast<int>(0.5 // add 0.5 for arithmetic rounding when casting double to int
+							HEIGHT_SCORE_HISTOGRAM_BINS - 1 // invert scale
+							- static_cast<int>(0.5 // add 0.5 for arithmetic rounding when casting double to int
 							+ log10(heightScore) // take logarithm of score
 							/ maxHeightScore * (HEIGHT_SCORE_HISTOGRAM_BINS - 1)); // assign every score to a bin
 						scoreHistogramsByOverlap[overlap][bin]++; // increase bin counter
@@ -336,12 +360,14 @@ void calculateHeightScoreHistograms(TCountsGenome &readCounts, THeightScoreMap &
 			}
 		}
 	}
+	getRelativeFrequencies(scoreHistogramsByOverlap);
 }
+
 
 // todo: description
 void calculateLocalHeightScoreHistograms(TCountsGenome &readCounts, TScoreHistogramsByOverlap &scoreHistogramsByOverlap)
 {
-	// iterate through all strands, contigs and positions to find those positions where a stack on the plus strand overlaps a stack on the minus strand by <overlap> nt
+	// iterate through all stacks
 	for (TCountsStrand::iterator contigPlusStrand = readCounts[STRAND_PLUS].begin(); contigPlusStrand != readCounts[STRAND_PLUS].end(); ++contigPlusStrand)
 	{
 		TCountsStrand::iterator contigMinusStrand = readCounts[STRAND_MINUS].find(contigPlusStrand->first);
@@ -388,12 +414,13 @@ void calculateLocalHeightScoreHistograms(TCountsGenome &readCounts, TScoreHistog
 			}
 		}
 	}
+	getRelativeFrequencies(scoreHistogramsByOverlap);
 }
 
 // todo: description
 void calculateBaseScoreHistograms(TCountsGenome &readCounts, TScoreHistogramsByOverlap &scoreHistogramsByOverlap)
 {
-	// iterate through all strands, contigs and positions to find those positions where a stack on the plus strand overlaps a stack on the minus strand by <overlap> nt
+	// iterate through all stacks
 	for (TCountsStrand::iterator contigPlusStrand = readCounts[STRAND_PLUS].begin(); contigPlusStrand != readCounts[STRAND_PLUS].end(); ++contigPlusStrand)
 	{
 		TCountsStrand::iterator contigMinusStrand = readCounts[STRAND_MINUS].find(contigPlusStrand->first);
@@ -401,70 +428,105 @@ void calculateBaseScoreHistograms(TCountsGenome &readCounts, TScoreHistogramsByO
 		{
 			for (TCountsContig::iterator positionPlusStrand = contigPlusStrand->second.begin(); positionPlusStrand != contigPlusStrand->second.end(); ++positionPlusStrand)
 			{
-				for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
+				TCountsContig::iterator positionMinusStrand = contigMinusStrand->second.find(positionPlusStrand->first + PING_PONG_OVERLAP);
+				if (positionMinusStrand != contigMinusStrand->second.end())
 				{
-					TCountsContig::iterator positionMinusStrand = contigMinusStrand->second.find(positionPlusStrand->first + overlap);
-					if (positionMinusStrand != contigMinusStrand->second.end())
+					// count how many stacks on the plus strand have Uridine at the 5' end
+					if (positionPlusStrand->second.UAt5PrimeEnd)
 					{
-						if (overlap == PING_PONG_OVERLAP)
-						{
-							// count how many stacks on the plus strand have U at the 5' end
-							if (positionPlusStrand->second.UAt5PrimeEnd)
-							{
-								scoreHistogramsByOverlap[overlap][BASE_SCORE_PLUS_STRAND_URIDINE]++;
-							}
-							else
-							{
-								scoreHistogramsByOverlap[overlap][BASE_SCORE_PLUS_STRAND_NOT_URIDINE]++;
-							}
-							// count how many stacks on the minus strand have U at the 5' end
-							if (positionMinusStrand->second.UAt5PrimeEnd)
-							{
-								scoreHistogramsByOverlap[overlap][BASE_SCORE_MINUS_STRAND_URIDINE]++;
-							}
-							else
-							{
-								scoreHistogramsByOverlap[overlap][BASE_SCORE_MINUS_STRAND_NOT_URIDINE]++;
-							}
-						}
-						else // this is an arbitrary overlap
-						{
-							// We do not examine the base content of arbitrarily overlapping stacks,
-							// because the dataset is filtered for piRNAs and will inherently have
-							// a preference for U at the 5' end.
-							// Instead, we simply count the total number of stacks and
-							// assume a relative frequency of 25% for all bases (see below).
-							scoreHistogramsByOverlap[overlap][BASE_SCORE_PLUS_STRAND_URIDINE]++;
-							scoreHistogramsByOverlap[overlap][BASE_SCORE_PLUS_STRAND_NOT_URIDINE]++;
-							scoreHistogramsByOverlap[overlap][BASE_SCORE_MINUS_STRAND_URIDINE]++;
-							scoreHistogramsByOverlap[overlap][BASE_SCORE_MINUS_STRAND_NOT_URIDINE]++;
-						}
+						scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_PLUS_STRAND_URIDINE]++;
+					}
+					else
+					{
+						scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_PLUS_STRAND_NOT_URIDINE]++;
+					}
+					// count how many stacks on the minus strand have Uridine at the 5' end
+					if (positionMinusStrand->second.UAt5PrimeEnd)
+					{
+						scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_MINUS_STRAND_URIDINE]++;
+					}
+					else
+					{
+						scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_MINUS_STRAND_NOT_URIDINE]++;
 					}
 				}
 			}
 		}
 	}
 
-	// multiply the bin counts of arbitrarily overlapping stacks with the relative frequency
-	// of U at the 5' end (25%) or a different base at the 5' end (75%)
+	// convert absolute counts to relative counts
+	scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_PLUS_STRAND_URIDINE] /= (scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_PLUS_STRAND_URIDINE] + scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_PLUS_STRAND_NOT_URIDINE]);
+	scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_PLUS_STRAND_NOT_URIDINE] = 1 - scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_PLUS_STRAND_URIDINE];
+	scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_MINUS_STRAND_URIDINE] /= (scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_MINUS_STRAND_URIDINE] + scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_MINUS_STRAND_NOT_URIDINE]);
+	scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_MINUS_STRAND_NOT_URIDINE] = 1 - scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_MINUS_STRAND_URIDINE];
+
+	// for arbitrary overlaps, assume a fixed frequency of 25% of having Uridine at the 5' end of reads
 	for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
 	{
 		if (overlap == PING_PONG_OVERLAP)
 			continue;
 
-		scoreHistogramsByOverlap[overlap][BASE_SCORE_PLUS_STRAND_URIDINE] = scoreHistogramsByOverlap[overlap][BASE_SCORE_PLUS_STRAND_URIDINE] * 25 / 100;
-		scoreHistogramsByOverlap[overlap][BASE_SCORE_PLUS_STRAND_NOT_URIDINE] = scoreHistogramsByOverlap[overlap][BASE_SCORE_PLUS_STRAND_NOT_URIDINE] * 75 / 100;
-		scoreHistogramsByOverlap[overlap][BASE_SCORE_MINUS_STRAND_URIDINE] = scoreHistogramsByOverlap[overlap][BASE_SCORE_MINUS_STRAND_URIDINE] * 25 / 100;
-		scoreHistogramsByOverlap[overlap][BASE_SCORE_MINUS_STRAND_NOT_URIDINE] = scoreHistogramsByOverlap[overlap][BASE_SCORE_MINUS_STRAND_NOT_URIDINE] * 75 / 100;
+		scoreHistogramsByOverlap[overlap][BASE_SCORE_PLUS_STRAND_URIDINE] = 0.25;
+		scoreHistogramsByOverlap[overlap][BASE_SCORE_PLUS_STRAND_NOT_URIDINE] = 1 - scoreHistogramsByOverlap[overlap][BASE_SCORE_PLUS_STRAND_URIDINE];
+		scoreHistogramsByOverlap[overlap][BASE_SCORE_MINUS_STRAND_URIDINE] = 0.25;
+		scoreHistogramsByOverlap[overlap][BASE_SCORE_MINUS_STRAND_NOT_URIDINE] = 1 - scoreHistogramsByOverlap[overlap][BASE_SCORE_MINUS_STRAND_URIDINE];
 	}
-
 }
 
-/*unsigned int getTotalScoreBin(double heightScore)
+// todo: description
+void calculateClusterScoreHistograms(TCountsGenome &readCounts, TScoreHistogramsByOverlap &scoreHistogramsByOverlap)
 {
-	double bin;
-	return static_cast<int>(bin + 0.5); // +0.5 ensures that float variable is rounded correctly when casting
-}*/
+	// iterate through all stacks
+	for (TCountsStrand::iterator contigPlusStrand = readCounts[STRAND_PLUS].begin(); contigPlusStrand != readCounts[STRAND_PLUS].end(); ++contigPlusStrand)
+	{
+		TCountsStrand::iterator contigMinusStrand = readCounts[STRAND_MINUS].find(contigPlusStrand->first);
+		if (contigMinusStrand != readCounts[STRAND_MINUS].end())
+		{
+			for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
+			{
+				// the following loop moves a sliding window over the contig
+				// and counts the number of stacks within the window surrounding
+				// the stack in the center of the window
+				const unsigned int slidingWindowSize = 1000;
+				bool slidingWindow[slidingWindowSize] = {false}; // initialize sliding window with "false", i.e., set all positions in the window to "no stack"
+				unsigned int stacksWithinWindow = 0; // keeps track of how many stacks there are in the window
+				unsigned int slidingWindowPosition = 0; // current position on the genome
+				for (TCountsContig::iterator positionPlusStrand = contigPlusStrand->second.begin(); positionPlusStrand != contigPlusStrand->second.end(); ++positionPlusStrand)
+				{
+					TCountsContig::iterator positionMinusStrand = contigMinusStrand->second.find(positionPlusStrand->first + overlap);
+					if (positionMinusStrand != contigMinusStrand->second.end())
+					{
+						while ((slidingWindowPosition < positionPlusStrand->first + slidingWindowSize/2) && (stacksWithinWindow > 0))
+						{
+							++slidingWindowPosition; // move sliding window by 1 nt
+							if (slidingWindow[slidingWindowPosition % slidingWindowSize]) // a stack fell out of the sliding window
+							{
+								slidingWindow[slidingWindowPosition % slidingWindowSize] = false; // there is no stack at the position that entered the sliding window
+								--stacksWithinWindow;
+							}
+
+							if (slidingWindow[(slidingWindowPosition + slidingWindowSize/2) % slidingWindowSize]) // there is a stack at the center of the sliding window
+							{
+								// find bin for score
+								unsigned int bin =
+									static_cast<int>(0.5 // add 0.5 for arithmetic rounding when casting double to int
+									+ static_cast<double>(stacksWithinWindow) / slidingWindowSize // normalize cluster density to values between 0 and 1
+									* (CLUSTER_SCORE_HISTOGRAM_BINS - 1) // assign every normalized score to a bin
+									);
+								// increase the counter for stacks falling into the bin returned by getHeightScoreBin()
+								scoreHistogramsByOverlap[overlap][bin]++;
+							}
+						}
+						slidingWindowPosition = positionPlusStrand->first;
+						slidingWindow[slidingWindowPosition % slidingWindowSize] = true;
+						++stacksWithinWindow;
+					}
+				}
+			}
+		}
+	}
+	getRelativeFrequencies(scoreHistogramsByOverlap);
+}
 
 // find those positions on the genome where reads on opposite strands overlap by 10 nucleotides
 // todo: document parameters
@@ -500,21 +562,11 @@ void calculateBaseScoreHistograms(TCountsGenome &readCounts, TScoreHistogramsByO
 }*/
 
 //todo: x-axis labels
-void plotHistograms(TScoreHistogramsByOverlap &scoreHistogramsByOverlap, unsigned int binCount, const string &title, bool logScale)
+void plotHistograms(TScoreHistogramsByOverlap &scoreHistogramsByOverlap, const string &title, unsigned int binCount, vector< string > xAxisLabels, bool logScale = false)
 {
-	// wrap histogram counts in "log10()", if y-axis should be scaled
-	string logFunctionOpen = "";
-	string logFunctionClose = "";
-	if (logScale)
-	{
-		logFunctionOpen = "log10(";
-		logFunctionClose = ")";
-	}
-
 	// generate an R script that produces a histogram plot
 	string fileName = title;
 	replace(fileName.begin(), fileName.end(), ' ', '_'); // replace blanks in file name
-	transform(fileName.begin(), fileName.end(), fileName.begin(), ::tolower); // convert file name to lowercase
 	ofstream rScript(toCString(fileName + ".R"));
 
 	rScript << "histograms <- data.frame("; // store histogram counts in a data frame
@@ -537,18 +589,50 @@ void plotHistograms(TScoreHistogramsByOverlap &scoreHistogramsByOverlap, unsigne
 	}
 	rScript << ")" << endl; // close data frame
 
+
 	// save plot as PNG
 	rScript
 		<< "options(bitmapType='cairo')" << endl
-		<< "png('" << fileName << ".png')" << endl
-		<< "plot(0, 0, xlim=c(0," << logFunctionOpen << binCount << logFunctionClose << "), ylim=c(0,max(histograms)), type='n', xlab='" << title << "', ylab='" << logFunctionOpen << "Frequency" << logFunctionClose << "', xaxt='n')" << endl
-		<< "axis(1, at=c(0,1,2,3)+0.5, labels=c('+ strand, U', '+ strand, not U', '- strand, U', '- strand, not U'))" << endl
+		<< "png('" << fileName << ".png')" << endl;
+
+	// wrap histogram counts in "log10()", if y-axis should be log-scaled
+	if (logScale)
+	{
+		rScript
+			<< "histograms <- log10(histograms)" << endl
+			<< "lowestValue <- floor(min(histograms[histograms != -Inf]))" << endl
+			<< "histograms <- histograms - lowestValue" << endl
+			<< "plot(0, 0, xlim=c(0," << binCount << "), ylim=c(0, -lowestValue), type='n', xlab='" << title << "', ylab='log10(relative frequency)', xaxt='n', yaxt='n')" << endl
+			<< "axis(2, at=0:-lowestValue, labels=lowestValue:0)" << endl;
+	}
+	else
+	{
+		rScript	<< "plot(0, 0, xlim=c(0," << binCount << "), ylim=c(0,max(histograms)), type='n', xlab='" << title << "', ylab='relative frequency', xaxt='n')" << endl;
+	}
+
+	// draw x-axis
+	if (xAxisLabels.size() == 0)
+	{
+		// auto-generate x-axis based on quantiles, if no custom x-axis labels are given
+		rScript << "axis(1, at=quantile(c(0," << binCount << "), probs = seq(0, 1, 0.2))+0.5, labels=quantile(c(0," << binCount << "), probs = seq(0, 1, 0.2)))" << endl;
+	}
+	else
+	{
+		// use custom x-axis labels to generate x-axis
+		rScript << "axis(1, at=0:" << (xAxisLabels.size() - 1) << "+0.5, labels=c(";
+		for (unsigned int i = 0; i < xAxisLabels.size() - 1; i++)
+			rScript << "'" << xAxisLabels[i] << "', ";
+		rScript << "'" << xAxisLabels[xAxisLabels.size() - 1] << "'))" << endl;
+	}
+
+	rScript
 		// draw bars for arbitrary overlaps
 		<< "for (overlap in " << MIN_ARBITRARY_OVERLAP << ":" << MAX_ARBITRARY_OVERLAP << ")" << endl
 		<< "	if (overlap != 10)" << endl
-		<< "		barplot(" << logFunctionOpen << "histograms[,paste('overlap', overlap, sep='')]" << logFunctionClose << ", col=rgb(0,0,0,alpha=0.1), border=NA, axes=FALSE, add=TRUE, width=1, space=0)" << endl
+		<< "		barplot(histograms[,paste('overlap', overlap, sep='')], col=rgb(0,0,0,alpha=0.1), border=NA, axes=FALSE, add=TRUE, width=1, space=0)" << endl
 		// draw a red line for ping-pong overlaps
-		<< "lines(0:" << binCount << ", " << logFunctionOpen << "c(histograms[,'overlap10'], histograms[nrow(histograms),'overlap10'])" << logFunctionClose << ", col='red', type='s')" << endl
+		<< "for (bin in 1:" << binCount << ")" << endl
+		<< "	lines(c(bin-1, bin), c(histograms$overlap10[bin], histograms$overlap10[bin]), type='l', col='red', lwd=2)" << endl
 		// draw legend
 		<< "legend(x='top', c('10 nt overlap', 'arbitrary overlaps'), col=c('red', 'black'), ncol=2, lwd=c(3,3), xpd=TRUE, inset=-0.1)" << endl
 		<< "garbage <- dev.off()" << endl;
@@ -560,19 +644,24 @@ void plotHistograms(TScoreHistogramsByOverlap &scoreHistogramsByOverlap, unsigne
 	string RCommand = "Rscript '" + fileName + ".R'";
 	system(toCString(RCommand));
 }
+void plotHistograms(TScoreHistogramsByOverlap &scoreHistogramsByOverlap, const string &title, unsigned int binCount, bool logScale = false)
+{
+	vector< string > xAxisLabels;
+	plotHistograms(scoreHistogramsByOverlap, title, binCount, xAxisLabels, logScale);
+}
+void plotHistograms(TScoreHistogramsByOverlap &scoreHistogramsByOverlap, const string &title, vector< string > xAxisLabels, bool logScale = false)
+{
+	plotHistograms(scoreHistogramsByOverlap, title, xAxisLabels.size(), xAxisLabels, logScale);
+}
+
 
 // program entry point
 int main(int argc, char const ** argv)
 {
-	// parse the command line
+	// parse the command line options
 	AppOptions options;
 	if (parseCommandLine(options, argc, argv) != ArgumentParser::PARSE_OK)
 		return 1;
-
-	// read from stdin, if no input file is given
-	if (options.inputFiles.size() == 0)
-		options.inputFiles.push_back("/dev/stdin");
-	//todo: scan input files for "-" and replace with "/dev/stdin"
 
 	TCountsGenome readCounts; // stats about positions where reads on the minus strand overlap with the 5' ends of reads on the plus strand
 
@@ -626,7 +715,7 @@ int main(int argc, char const ** argv)
 		// close SAM/BAM file
 		close(bamFile);
 
-		stopwatch("", options.verbosity);
+		stopwatch(options.verbosity);
 	}
 
 	// go to output directory
@@ -645,25 +734,33 @@ int main(int argc, char const ** argv)
 	mapHeightsToScores(readCounts, heightScoreMap);
 	TScoreHistogramsByOverlap heightScoreHistogramsByOverlap;
 	calculateHeightScoreHistograms(readCounts, heightScoreMap, heightScoreHistogramsByOverlap);
-	stopwatch("", options.verbosity);
+	stopwatch(options.verbosity);
 
 	stopwatch("Generating histograms of local stack heights", options.verbosity);
 	TScoreHistogramsByOverlap localHeightScoreHistogramsByOverlap;
 	calculateLocalHeightScoreHistograms(readCounts, localHeightScoreHistogramsByOverlap);
-	stopwatch("", options.verbosity);
+	stopwatch(options.verbosity);
 
 	stopwatch("Generating histograms of base content of the 5' end of reads", options.verbosity);
 	TScoreHistogramsByOverlap baseScoreHistogramsByOverlap;
 	calculateBaseScoreHistograms(readCounts, baseScoreHistogramsByOverlap);
-	stopwatch("", options.verbosity);
+	stopwatch(options.verbosity);
+
+	stopwatch("Generating histograms of clustering densities", options.verbosity);
+	TScoreHistogramsByOverlap clusterScoreHistogramsByOverlap;
+	calculateClusterScoreHistograms(readCounts, clusterScoreHistogramsByOverlap);
+	stopwatch(options.verbosity);
 
 	if (options.plot)
 	{
 		stopwatch("Generating R plots", options.verbosity);
-		plotHistograms(heightScoreHistogramsByOverlap, HEIGHT_SCORE_HISTOGRAM_BINS, "Height Score", true);
-		plotHistograms(localHeightScoreHistogramsByOverlap, LOCAL_HEIGHT_SCORE_HISTOGRAM_BINS, "Local Height Score", false);
-		plotHistograms(baseScoreHistogramsByOverlap, 4, "Base Content at 5-Prime End", false);
-		stopwatch("", options.verbosity);
+		plotHistograms(heightScoreHistogramsByOverlap, "height score", HEIGHT_SCORE_HISTOGRAM_BINS, true);
+		plotHistograms(localHeightScoreHistogramsByOverlap, "local height score", LOCAL_HEIGHT_SCORE_HISTOGRAM_BINS);
+		vector< string > xAxisLabels;
+		xAxisLabels.push_back("+ strand, U"); xAxisLabels.push_back("+ strand, not U"); xAxisLabels.push_back("- strand, U"); xAxisLabels.push_back("- strand, not U");
+		plotHistograms(baseScoreHistogramsByOverlap, "base content at 5-prime end", xAxisLabels);
+		plotHistograms(clusterScoreHistogramsByOverlap, "clustering density score", CLUSTER_SCORE_HISTOGRAM_BINS);
+		stopwatch(options.verbosity);
 	}
 
 /*	stopwatch("Scanning for overlapping reads", options.verbosity);
@@ -677,7 +774,7 @@ int main(int argc, char const ** argv)
 	if (findOverlappingReads(bedGraphFile, readCounts, bamNameStore, options.minStackHeight, heightScoreMap, combinedStackScoreMap) != 0)
 		return 1;
 	bedGraphFile.close();
-	stopwatch("", options.verbosity);
+	stopwatch(options.verbosity);
 */
 	return 0;
 }
