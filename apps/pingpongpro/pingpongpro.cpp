@@ -66,10 +66,8 @@ const unsigned int STRAND_MINUS = 1;
 //  - UAt5PrimeEnd: whether the reads of the stack have a U at the 5' end
 struct TCountsPosition
 {
-	unsigned int reads: 31;
-	bool UAt5PrimeEnd: 1;
-	unsigned int heightScoreBin: 10; // must be big enough to hold HEIGHT_SCORE_HISTOGRAM_BINS
-	unsigned int localHeightScoreBin: 7; // must be big enough to hold LOCAL_HEIGHT_SCORE_HISTOGRAM_BINS
+	float reads;
+	bool UAt5PrimeEnd;
 	TCountsPosition():
 		reads(0),
 		UAt5PrimeEnd(false)
@@ -90,22 +88,19 @@ typedef TCountsStrand TCountsGenome[2];
 #define MIN_ARBITRARY_OVERLAP 0
 #define MAX_ARBITRARY_OVERLAP 20
 
-// todo: description
-#define HEIGHT_SCORE_HISTOGRAM_BINS 1000
-#define LOCAL_HEIGHT_SCORE_HISTOGRAM_BINS 100
-#define CLUSTER_SCORE_HISTOGRAM_BINS 100
-typedef map< unsigned int, double > TScoreHistogram;
-typedef map< unsigned int, TScoreHistogram > TScoreHistogramsByOverlap;
-
-#define BASE_SCORE_PLUS_STRAND_URIDINE 0
-#define BASE_SCORE_PLUS_STRAND_NOT_URIDINE 1
-#define BASE_SCORE_MINUS_STRAND_URIDINE 2
-#define BASE_SCORE_MINUS_STRAND_NOT_URIDINE 3
-
-typedef map< unsigned int, double > TScoresByBin;
-
 // type to store a score for each stack height found in the input file
 typedef map< unsigned int, double > THeightScoreMap;
+
+// todo: description
+#define IS_URIDINE 0
+#define IS_NOT_URIDINE 1
+#define IS_ABOVE_COVERAGE 0
+#define IS_BELOW_COVERAGE 1
+typedef vector< vector< vector< vector< float > > > > TGroupedStackCounts;
+typedef vector< TGroupedStackCounts > TGroupedStackCountsByOverlap;
+
+// the probability of having uridine at the 5' end of reads (for non-piRNA data)
+#define URIDINE_PROBABILITY 0.25
 
 // ==========================================================================
 // Functions
@@ -130,11 +125,12 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	setDefaultValue(parser, "min-stack-height", options.minStackHeight);
 	setMinValue(parser, "min-stack-height", "1");
 
-	addOption(parser, ArgParseOption("i", "input", "Input file(s) in SAM/BAM format.", ArgParseArgument::INPUTFILE, "PATH", true));
+	addOption(parser, ArgParseOption("i", "input", "Input file(s) in SAM/BAM format. \"-\" means stdin.", ArgParseArgument::INPUTFILE, "PATH", true));
 	setDefaultValue(parser, "input", "-");
 	vector< string > acceptedInputFormats;
 	acceptedInputFormats.push_back(".sam");
 	acceptedInputFormats.push_back(".bam");
+	acceptedInputFormats.push_back("-");
 	setValidValues(parser, "input", acceptedInputFormats);
 
 	addOption(parser, ArgParseOption("l", "min-read-length", "Ignore reads in the input file that are shorter than the specified length.", ArgParseArgument::INTEGER, "LENGTH", true));
@@ -158,14 +154,20 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	// extract options, if parsing was successful
 	options.bedGraph = isSet(parser, "bedgraph");
 	options.inputFiles.resize(getOptionValueCount(parser, "input")); // store input files in vector
-	for (vector< string >::size_type i = 0; i < options.inputFiles.size(); i++)
-	{
-		getOptionValue(options.inputFiles[i], parser, "input", i);
-		if (options.inputFiles[i] == "-")
-			options.inputFiles[i] = "/dev/stdin";
-	}
 	if (options.inputFiles.size() == 0)
+	{
 		options.inputFiles.push_back("/dev/stdin"); // read from stdin, if no input file is given
+	}
+	else
+	{
+		for (vector< string >::size_type i = 0; i < options.inputFiles.size(); i++)
+		{
+			getOptionValue(options.inputFiles[i], parser, "input", i);
+			if (options.inputFiles[i] == "-")
+				options.inputFiles[i] = "/dev/stdin";
+		}
+	}
+
 	getOptionValue(options.minStackHeight, parser, "min-stack-height");
 	getOptionValue(options.minReadLength, parser, "min-read-length");
 	getOptionValue(options.maxReadLength, parser, "max-read-length");
@@ -302,20 +304,6 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCounts, unsigned 
 	}
 }*/
 
-// convert absolute counts to relative frequencies
-// todo: parameters
-void getRelativeFrequencies(TScoreHistogramsByOverlap &scoreHistogramsByOverlap)
-{
-	for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
-	{
-		double total = 0;
-		for (TScoreHistogram::iterator bar = scoreHistogramsByOverlap[overlap].begin(); bar != scoreHistogramsByOverlap[overlap].end(); ++bar)
-			total += bar->second;
-		for (TScoreHistogram::iterator bar = scoreHistogramsByOverlap[overlap].begin(); bar != scoreHistogramsByOverlap[overlap].end(); ++bar)
-			bar->second /= total;
-	}
-}
-
 // convert stack heights to scores
 // todo: document parameters
 void mapHeightsToScores(TCountsGenome &readCounts, THeightScoreMap &heightScoreMap)
@@ -328,8 +316,30 @@ void mapHeightsToScores(TCountsGenome &readCounts, THeightScoreMap &heightScoreM
 }
 
 // todo: description
-void calculateHeightScoreHistograms(TCountsGenome &readCounts, THeightScoreMap &heightScoreMap, TScoreHistogramsByOverlap &scoreHistogramsByOverlap)
+void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreMap, TGroupedStackCountsByOverlap &groupedStackCountsByOverlap)
 {
+	// the following loop initializes a multi-dimensional array of stack counts with the following boundaries:
+	// MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP + 1 (one for each possible overlap)
+	// 1000 (one of each bin of the height scores)
+	// 2 (one for reads with uridine at the 5' end of reads on the + strand and one for those with a different base)
+	// 2 (one for reads with uridine at the 5' end of reads on the - strand and one for those with a different base)
+	// 2 (one for stack heights below the local coverage and one for stack heights above)
+	groupedStackCountsByOverlap.resize(MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP + 1);
+	for (TGroupedStackCountsByOverlap::iterator i = groupedStackCountsByOverlap.begin(); i != groupedStackCountsByOverlap.end(); ++i)
+	{
+		i->resize(1000);
+		for (TGroupedStackCounts::iterator j = i->begin(); j != i->end(); ++j)
+		{
+			j->resize(2);
+			for (vector< vector< vector< float > > >::iterator k = j->begin(); k != j->end(); ++k)
+			{
+				k->resize(2);
+				for (vector< vector< float > >::iterator l = k->begin(); l != k->end(); ++l)
+					l->resize(2);
+			}
+		}
+	}
+
 	// the highest possible score is that of two overlapping stacks which both have a height of just 1 read
 	const double maxHeightScore = log10(heightScoreMap[1] * heightScoreMap[1]);
 
@@ -341,192 +351,137 @@ void calculateHeightScoreHistograms(TCountsGenome &readCounts, THeightScoreMap &
 		{
 			for (TCountsContig::iterator positionPlusStrand = contigPlusStrand->second.begin(); positionPlusStrand != contigPlusStrand->second.end(); ++positionPlusStrand)
 			{
+				vector< TCountsPosition* > stacksOnMinusStrand(MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP + 1);
+				double meanStackHeightInVicinity = 0;
+				float maxStackHeightInVicinity = 0;
 				for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
 				{
 					TCountsContig::iterator positionMinusStrand = contigMinusStrand->second.find(positionPlusStrand->first + overlap);
 					if (positionMinusStrand != contigMinusStrand->second.end())
 					{
-						// calculate score based on heights of overlapping stacks
-						double heightScore = heightScoreMap[positionPlusStrand->second.reads] * heightScoreMap[positionMinusStrand->second.reads];
-						// find the bin for the score
-						unsigned int bin =
-							HEIGHT_SCORE_HISTOGRAM_BINS - 1 // invert scale
-							- static_cast<int>(0.5 // add 0.5 for arithmetic rounding when casting double to int
-							+ log10(heightScore) // take logarithm of score
-							/ maxHeightScore * (HEIGHT_SCORE_HISTOGRAM_BINS - 1)); // assign every score to a bin
-						scoreHistogramsByOverlap[overlap][bin]++; // increase bin counter
+						// calculate mean of stack heights in the vicinity
+						meanStackHeightInVicinity += positionMinusStrand->second.reads;
+						// find highest stacks height in the vicinity
+						if (positionMinusStrand->second.reads > maxStackHeightInVicinity)
+							maxStackHeightInVicinity = positionMinusStrand->second.reads;
+						// remember the stacks that we found, so we do not have to search them again
+						stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP] = &(positionMinusStrand->second);
 					}
 				}
-			}
-		}
-	}
-	getRelativeFrequencies(scoreHistogramsByOverlap);
-}
+				meanStackHeightInVicinity /= stacksOnMinusStrand.size();
 
-
-// todo: description
-void calculateLocalHeightScoreHistograms(TCountsGenome &readCounts, TScoreHistogramsByOverlap &scoreHistogramsByOverlap)
-{
-	// iterate through all stacks
-	for (TCountsStrand::iterator contigPlusStrand = readCounts[STRAND_PLUS].begin(); contigPlusStrand != readCounts[STRAND_PLUS].end(); ++contigPlusStrand)
-	{
-		TCountsStrand::iterator contigMinusStrand = readCounts[STRAND_MINUS].find(contigPlusStrand->first);
-		if (contigMinusStrand != readCounts[STRAND_MINUS].end())
-		{
-			for (TCountsContig::iterator positionPlusStrand = contigPlusStrand->second.begin(); positionPlusStrand != contigPlusStrand->second.end(); ++positionPlusStrand)
-			{
-				map< int, unsigned int > stackHeightsInVicinity;
-				double mean = 0;
-				unsigned int max = 0;
-				for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
+				if (maxStackHeightInVicinity > 0) // only continue, if there are any stacks in the vicinity at all
 				{
-					TCountsContig::iterator positionMinusStrand = contigMinusStrand->second.find(positionPlusStrand->first + overlap);
-					if (positionMinusStrand != contigMinusStrand->second.end())
-					{
-						stackHeightsInVicinity[overlap] = positionMinusStrand->second.reads;
-						mean += positionMinusStrand->second.reads;
-						if (positionMinusStrand->second.reads > max)
-							max = positionMinusStrand->second.reads;
-					}
-				}
-
-				if (max > 0)
-				{
-					mean /= (MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP + 1);
+					float heightScorePlus = heightScoreMap[positionPlusStrand->second.reads];
 
 					for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
 					{
-						if (stackHeightsInVicinity[overlap] > 0)
+						if (stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP])
 						{
-							// calculate score based on how much higher the stack is compared to the stacks in the vicinity
-							double localHeightScore = (stackHeightsInVicinity[overlap] - (mean - stackHeightsInVicinity[overlap]/(MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP + 1))) / max;
-							// find bin for score
-							unsigned int bin =
+							// calculate score based on heights of overlapping stacks
+							double heightScore = heightScorePlus * heightScoreMap[stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP]->reads];
+							// find the bin for the score
+							unsigned int heightScoreBin =
 								static_cast<int>(0.5 // add 0.5 for arithmetic rounding when casting double to int
-								+ (localHeightScore + 1) / 2 // score can take values between -1 and +1 => normalize score to values between 0 and 1
-								* (LOCAL_HEIGHT_SCORE_HISTOGRAM_BINS - 1) // assign every normalized score to a bin
-								);
-							// increase the counter for stacks falling into the bin returned by getHeightScoreBin()
-							scoreHistogramsByOverlap[overlap][bin]++;
+								+ log10(heightScore) // take logarithm of score
+								/ maxHeightScore * (groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP].size() - 1)); // assign every score to a bin
+
+							// calculate score based on how much higher the stack is compared to the stacks in the vicinity
+							float localHeightScore = (stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP]->reads - (meanStackHeightInVicinity - stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP]->reads/stacksOnMinusStrand.size())) / maxStackHeightInVicinity;
+							// 0.2 seems to be the magical threshold that best segregates ping-pong overlaps from arbitrary overlaps
+							unsigned int localHeightScoreBin = (localHeightScore < 0.2) ? IS_BELOW_COVERAGE : IS_ABOVE_COVERAGE;
+
+							if (overlap == PING_PONG_OVERLAP)
+							{
+								// calculate score based on whether the stack on the + strand has Uridine at the 5' end
+								unsigned int uridinePlusBin = (positionPlusStrand->second.UAt5PrimeEnd) ? IS_URIDINE : IS_NOT_URIDINE;
+								// calculate score based on whether the stack on the - strand has Uridine at the 5' end
+								unsigned int uridineMinusBin = (stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP]->UAt5PrimeEnd) ? IS_URIDINE : IS_NOT_URIDINE;
+								// increase bin counter
+								groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP][heightScoreBin][uridinePlusBin][uridineMinusBin][localHeightScoreBin]++;
+							}
+							else
+							{
+								// We assume a fixed probability of 25% of having uridine at the 5' end of reads.
+								// Therefore, we add fractions to all bin counters.
+								groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP][heightScoreBin][IS_URIDINE][IS_URIDINE][localHeightScoreBin] += URIDINE_PROBABILITY * URIDINE_PROBABILITY;
+								groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP][heightScoreBin][IS_NOT_URIDINE][IS_URIDINE][localHeightScoreBin] += (1-URIDINE_PROBABILITY) * URIDINE_PROBABILITY;
+								groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP][heightScoreBin][IS_URIDINE][IS_NOT_URIDINE][localHeightScoreBin] += URIDINE_PROBABILITY * (1-URIDINE_PROBABILITY);
+								groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP][heightScoreBin][IS_NOT_URIDINE][IS_NOT_URIDINE][localHeightScoreBin] += (1-URIDINE_PROBABILITY) * (1-URIDINE_PROBABILITY);
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+//todo: collapse bins
+void collapseBins(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap)
+{
+	// collapse this many bins together to one
+	unsigned int binsToCollapse = 0;
+
+	// create a new container to hold the collapsed bin counts
+	TGroupedStackCountsByOverlap collapsed = groupedStackCountsByOverlap;
+
+	collapse_bins_loop:
+	if (binsToCollapse <= groupedStackCountsByOverlap[0].size()) // abort, if all bins have been collapsed to one (which should never happen with good data)
+	{
+		binsToCollapse++;
+
+		// collapse bins
+		for (unsigned int overlap = 0; overlap < groupedStackCountsByOverlap.size(); overlap++)
+		{
+			// initialize collapsed container with 0
+			collapsed[overlap].resize(ceil(1.0 * groupedStackCountsByOverlap[overlap].size() / binsToCollapse));
+			for (TGroupedStackCounts::iterator i = collapsed[overlap].begin(); i != collapsed[overlap].end(); ++i)
+				for (vector< vector< vector< float > > >::iterator j = i->begin(); j != i->end(); ++j)
+					for (vector< vector< float > >::iterator k = j->begin(); k != j->end(); ++k)
+						for (vector< float >::iterator l = k->begin(); l != k->end(); ++l)
+							*l = 0;
+
+			// collapse bins
+			for (unsigned int bin = 0; bin < groupedStackCountsByOverlap[overlap].size(); bin++)
+				for (unsigned int i = 0; i < groupedStackCountsByOverlap[overlap][bin].size(); i++)
+					for (unsigned int j = 0; j < groupedStackCountsByOverlap[overlap][bin][i].size(); j++)
+						for (unsigned int k = 0; k < groupedStackCountsByOverlap[overlap][bin][i][j].size(); ++k)
+							collapsed[overlap][bin/binsToCollapse][i][j][k] += groupedStackCountsByOverlap[overlap][bin][i][j][k];
+		}
+
+		// check if there are any empty bins
+		for (TGroupedStackCountsByOverlap::iterator i = collapsed.begin(); i != collapsed.end(); ++i)
+			for (TGroupedStackCounts::iterator j = i->begin(); j != i->end(); ++j)
+				for (vector< vector< vector< float > > >::iterator k = j->begin(); k != j->end(); ++k)
+					for (vector< vector< float > >::iterator l = k->begin(); l != k->end(); ++l)
+						for (vector< float >::iterator m = l->begin(); m != l->end(); ++m)
+							if (*m <= 0)
+								goto collapse_bins_loop; // if there are still empty bins, collapse even more bins until there are no empty bins anymore
+	} // loop terminates when all bins have a value > 0
+cout << "binsToCollapse" << binsToCollapse;
+for (unsigned int overlap = 0; overlap < collapsed.size(); overlap++) {
+			cout << "overlap" << overlap << endl;
+			for (unsigned int bin = 0; bin < collapsed[overlap].size(); bin++) {
+				cout << "	bin" << bin << endl;
+				for (unsigned int i = 0; i < collapsed[overlap][bin].size(); i++) {
+					cout << "		uplus" << i << endl;
+					for (unsigned int j = 0; j < collapsed[overlap][bin][i].size(); j++) {
+						cout << "			uminus" << j << endl;
+						for (unsigned int k = 0; k < collapsed[overlap][bin][i][j].size(); ++k) {
+							cout << "				localheight" << k << endl;
+							cout << "					" << collapsed[overlap][bin][i][j][k] << endl;
 						}
 					}
 				}
 			}
 		}
-	}
-	getRelativeFrequencies(scoreHistogramsByOverlap);
+		cout.flush();
+
+	// return collapsed bins as result
+	groupedStackCountsByOverlap = collapsed;
 }
 
-// todo: description
-void calculateBaseScoreHistograms(TCountsGenome &readCounts, TScoreHistogramsByOverlap &scoreHistogramsByOverlap)
-{
-	// iterate through all stacks
-	for (TCountsStrand::iterator contigPlusStrand = readCounts[STRAND_PLUS].begin(); contigPlusStrand != readCounts[STRAND_PLUS].end(); ++contigPlusStrand)
-	{
-		TCountsStrand::iterator contigMinusStrand = readCounts[STRAND_MINUS].find(contigPlusStrand->first);
-		if (contigMinusStrand != readCounts[STRAND_MINUS].end())
-		{
-			for (TCountsContig::iterator positionPlusStrand = contigPlusStrand->second.begin(); positionPlusStrand != contigPlusStrand->second.end(); ++positionPlusStrand)
-			{
-				TCountsContig::iterator positionMinusStrand = contigMinusStrand->second.find(positionPlusStrand->first + PING_PONG_OVERLAP);
-				if (positionMinusStrand != contigMinusStrand->second.end())
-				{
-					// count how many stacks on the plus strand have Uridine at the 5' end
-					if (positionPlusStrand->second.UAt5PrimeEnd)
-					{
-						scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_PLUS_STRAND_URIDINE]++;
-					}
-					else
-					{
-						scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_PLUS_STRAND_NOT_URIDINE]++;
-					}
-					// count how many stacks on the minus strand have Uridine at the 5' end
-					if (positionMinusStrand->second.UAt5PrimeEnd)
-					{
-						scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_MINUS_STRAND_URIDINE]++;
-					}
-					else
-					{
-						scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_MINUS_STRAND_NOT_URIDINE]++;
-					}
-				}
-			}
-		}
-	}
-
-	// convert absolute counts to relative counts
-	scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_PLUS_STRAND_URIDINE] /= (scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_PLUS_STRAND_URIDINE] + scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_PLUS_STRAND_NOT_URIDINE]);
-	scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_PLUS_STRAND_NOT_URIDINE] = 1 - scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_PLUS_STRAND_URIDINE];
-	scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_MINUS_STRAND_URIDINE] /= (scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_MINUS_STRAND_URIDINE] + scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_MINUS_STRAND_NOT_URIDINE]);
-	scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_MINUS_STRAND_NOT_URIDINE] = 1 - scoreHistogramsByOverlap[PING_PONG_OVERLAP][BASE_SCORE_MINUS_STRAND_URIDINE];
-
-	// for arbitrary overlaps, assume a fixed frequency of 25% of having Uridine at the 5' end of reads
-	for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
-	{
-		if (overlap == PING_PONG_OVERLAP)
-			continue;
-
-		scoreHistogramsByOverlap[overlap][BASE_SCORE_PLUS_STRAND_URIDINE] = 0.25;
-		scoreHistogramsByOverlap[overlap][BASE_SCORE_PLUS_STRAND_NOT_URIDINE] = 1 - scoreHistogramsByOverlap[overlap][BASE_SCORE_PLUS_STRAND_URIDINE];
-		scoreHistogramsByOverlap[overlap][BASE_SCORE_MINUS_STRAND_URIDINE] = 0.25;
-		scoreHistogramsByOverlap[overlap][BASE_SCORE_MINUS_STRAND_NOT_URIDINE] = 1 - scoreHistogramsByOverlap[overlap][BASE_SCORE_MINUS_STRAND_URIDINE];
-	}
-}
-
-// todo: description
-void calculateClusterScoreHistograms(TCountsGenome &readCounts, TScoreHistogramsByOverlap &scoreHistogramsByOverlap)
-{
-	// iterate through all stacks
-	for (TCountsStrand::iterator contigPlusStrand = readCounts[STRAND_PLUS].begin(); contigPlusStrand != readCounts[STRAND_PLUS].end(); ++contigPlusStrand)
-	{
-		TCountsStrand::iterator contigMinusStrand = readCounts[STRAND_MINUS].find(contigPlusStrand->first);
-		if (contigMinusStrand != readCounts[STRAND_MINUS].end())
-		{
-			for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
-			{
-				// the following loop moves a sliding window over the contig
-				// and counts the number of stacks within the window surrounding
-				// the stack in the center of the window
-				const unsigned int slidingWindowSize = 1000;
-				bool slidingWindow[slidingWindowSize] = {false}; // initialize sliding window with "false", i.e., set all positions in the window to "no stack"
-				unsigned int stacksWithinWindow = 0; // keeps track of how many stacks there are in the window
-				unsigned int slidingWindowPosition = 0; // current position on the genome
-				for (TCountsContig::iterator positionPlusStrand = contigPlusStrand->second.begin(); positionPlusStrand != contigPlusStrand->second.end(); ++positionPlusStrand)
-				{
-					TCountsContig::iterator positionMinusStrand = contigMinusStrand->second.find(positionPlusStrand->first + overlap);
-					if (positionMinusStrand != contigMinusStrand->second.end())
-					{
-						while ((slidingWindowPosition < positionPlusStrand->first + slidingWindowSize/2) && (stacksWithinWindow > 0))
-						{
-							++slidingWindowPosition; // move sliding window by 1 nt
-							if (slidingWindow[slidingWindowPosition % slidingWindowSize]) // a stack fell out of the sliding window
-							{
-								slidingWindow[slidingWindowPosition % slidingWindowSize] = false; // there is no stack at the position that entered the sliding window
-								--stacksWithinWindow;
-							}
-
-							if (slidingWindow[(slidingWindowPosition + slidingWindowSize/2) % slidingWindowSize]) // there is a stack at the center of the sliding window
-							{
-								// find bin for score
-								unsigned int bin =
-									static_cast<int>(0.5 // add 0.5 for arithmetic rounding when casting double to int
-									+ static_cast<double>(stacksWithinWindow) / slidingWindowSize // normalize cluster density to values between 0 and 1
-									* (CLUSTER_SCORE_HISTOGRAM_BINS - 1) // assign every normalized score to a bin
-									);
-								// increase the counter for stacks falling into the bin returned by getHeightScoreBin()
-								scoreHistogramsByOverlap[overlap][bin]++;
-							}
-						}
-						slidingWindowPosition = positionPlusStrand->first;
-						slidingWindow[slidingWindowPosition % slidingWindowSize] = true;
-						++stacksWithinWindow;
-					}
-				}
-			}
-		}
-	}
-	getRelativeFrequencies(scoreHistogramsByOverlap);
-}
 
 // find those positions on the genome where reads on opposite strands overlap by 10 nucleotides
 // todo: document parameters
@@ -561,8 +516,7 @@ void calculateClusterScoreHistograms(TCountsGenome &readCounts, TScoreHistograms
 	return 0;
 }*/
 
-//todo: x-axis labels
-void plotHistograms(TScoreHistogramsByOverlap &scoreHistogramsByOverlap, const string &title, unsigned int binCount, vector< string > xAxisLabels, bool logScale = false)
+/*void plotHistograms(TScoreHistogramsByOverlap &scoreHistogramsByOverlap, const string &title, unsigned int binCount, vector< string > xAxisLabels, bool logScale = false)
 {
 	// generate an R script that produces a histogram plot
 	string fileName = title;
@@ -652,8 +606,7 @@ void plotHistograms(TScoreHistogramsByOverlap &scoreHistogramsByOverlap, const s
 void plotHistograms(TScoreHistogramsByOverlap &scoreHistogramsByOverlap, const string &title, vector< string > xAxisLabels, bool logScale = false)
 {
 	plotHistograms(scoreHistogramsByOverlap, title, xAxisLabels.size(), xAxisLabels, logScale);
-}
-
+}*/
 
 // program entry point
 int main(int argc, char const ** argv)
@@ -729,29 +682,18 @@ int main(int argc, char const ** argv)
 		}
 	}
 
-	stopwatch("Generating histograms of stack heights", options.verbosity);
+	stopwatch("Binning stacks", options.verbosity);
 	THeightScoreMap heightScoreMap;
 	mapHeightsToScores(readCounts, heightScoreMap);
-	TScoreHistogramsByOverlap heightScoreHistogramsByOverlap;
-	calculateHeightScoreHistograms(readCounts, heightScoreMap, heightScoreHistogramsByOverlap);
+	TGroupedStackCountsByOverlap groupedStackCountsByOverlap;
+	countStacksByGroup(readCounts, heightScoreMap, groupedStackCountsByOverlap);
 	stopwatch(options.verbosity);
 
-	stopwatch("Generating histograms of local stack heights", options.verbosity);
-	TScoreHistogramsByOverlap localHeightScoreHistogramsByOverlap;
-	calculateLocalHeightScoreHistograms(readCounts, localHeightScoreHistogramsByOverlap);
+	stopwatch("Collapsing bins", options.verbosity);
+	collapseBins(groupedStackCountsByOverlap);
 	stopwatch(options.verbosity);
 
-	stopwatch("Generating histograms of base content of the 5' end of reads", options.verbosity);
-	TScoreHistogramsByOverlap baseScoreHistogramsByOverlap;
-	calculateBaseScoreHistograms(readCounts, baseScoreHistogramsByOverlap);
-	stopwatch(options.verbosity);
-
-	stopwatch("Generating histograms of clustering densities", options.verbosity);
-	TScoreHistogramsByOverlap clusterScoreHistogramsByOverlap;
-	calculateClusterScoreHistograms(readCounts, clusterScoreHistogramsByOverlap);
-	stopwatch(options.verbosity);
-
-	if (options.plot)
+/*	if (options.plot)
 	{
 		stopwatch("Generating R plots", options.verbosity);
 		plotHistograms(heightScoreHistogramsByOverlap, "height score", HEIGHT_SCORE_HISTOGRAM_BINS, true);
@@ -761,7 +703,7 @@ int main(int argc, char const ** argv)
 		plotHistograms(baseScoreHistogramsByOverlap, "base content at 5-prime end", xAxisLabels);
 		plotHistograms(clusterScoreHistogramsByOverlap, "clustering density score", CLUSTER_SCORE_HISTOGRAM_BINS);
 		stopwatch(options.verbosity);
-	}
+	}*/
 
 /*	stopwatch("Scanning for overlapping reads", options.verbosity);
 	ofstream bedGraphFile(toCString(options.outputBedGraph));
@@ -778,5 +720,6 @@ int main(int argc, char const ** argv)
 */
 	return 0;
 }
+
 
 
