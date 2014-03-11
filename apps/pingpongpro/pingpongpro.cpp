@@ -238,29 +238,36 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCounts, unsigned 
 		    (length(record.seq) >= minReadLength) && (length(record.seq) <= maxReadLength)) // skip reads which are not within the specified length range
 
 		{
-			// calculate start of alignment using CIGAR string
-			size_t clippedBases = 0;
-			if (record.cigar[0].operation == 'S')
-				clippedBases = record.cigar[0].count;
-
-			// calculate length of alignment using CIGAR string
-			size_t alignmentLength = 0;
-			for (unsigned int cigarIndex = 0; cigarIndex < length(record.cigar); ++cigarIndex)
-			{
-				if ((record.cigar[cigarIndex].operation == 'M') || (record.cigar[cigarIndex].operation == 'N') || (record.cigar[cigarIndex].operation == 'D') || (record.cigar[cigarIndex].operation == '=') || (record.cigar[cigarIndex].operation == 'X')) // these CIGAR elements indicate alignment
-					alignmentLength += record.cigar[cigarIndex].count;
-			}
-
 			if (hasFlagRC(record)) // read maps to minus strand
 			{
-				position = &(readCounts[STRAND_MINUS][record.rID][record.beginPos+alignmentLength]); // get a pointer to counter of the position of the read
-				if ((record.seq[clippedBases+alignmentLength] == 'A') || (record.seq[clippedBases+alignmentLength] == 'a')) // check if last base is an A
+				// calculate length of alignment using CIGAR string
+				size_t alignmentLength = 0;
+				for (unsigned int cigarIndex = 0; cigarIndex < length(record.cigar); ++cigarIndex)
+				{
+					if ((record.cigar[cigarIndex].operation == 'M') || (record.cigar[cigarIndex].operation == 'N') || (record.cigar[cigarIndex].operation == 'D') || (record.cigar[cigarIndex].operation == '=') || (record.cigar[cigarIndex].operation == 'X')) // these CIGAR elements indicate alignment
+						alignmentLength += record.cigar[cigarIndex].count;
+				}
+
+				// get a pointer to counter of the position of the read
+				position = &(readCounts[STRAND_MINUS][record.rID][record.beginPos+alignmentLength]);
+
+				// check if base at 5' end is uridine
+				size_t clippedBasesFromEnd = 0;
+				if ((length(record.cigar) > 1) && (record.cigar[length(record.cigar)-1].operation == 'S'))
+					clippedBasesFromEnd = record.cigar[length(record.cigar)-1].count;
+				if ((record.seq[length(record.seq)-clippedBasesFromEnd-1] == 'A') || (record.seq[length(record.seq)-clippedBasesFromEnd-1] == 'a')) // check if last base is an A
 					position->UAt5PrimeEnd = true;
 			}
 			else // read maps to plus strand
 			{
-				position = &(readCounts[STRAND_PLUS][record.rID][record.beginPos]); // get a pointer to the counter of the position of the read
-				if ((record.seq[clippedBases] == 'T') || (record.seq[clippedBases] == 't')) // check if first base is a U
+				// get a pointer to counter of the position of the read
+				position = &(readCounts[STRAND_PLUS][record.rID][record.beginPos]);
+
+				// check if base at 5' end is uridine
+				size_t clippedBasesFromStart = 0;
+				if (record.cigar[0].operation == 'S')
+					clippedBasesFromStart = record.cigar[0].count;
+				if ((record.seq[clippedBasesFromStart] == 'T') || (record.seq[clippedBasesFromStart] == 't'))
 					position->UAt5PrimeEnd = true;
 			}
 
