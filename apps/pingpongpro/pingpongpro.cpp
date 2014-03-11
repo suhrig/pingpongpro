@@ -427,7 +427,7 @@ void collapseBins(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap)
 	TGroupedStackCountsByOverlap collapsed = groupedStackCountsByOverlap;
 
 	collapse_bins_loop:
-	if (binsToCollapse <= groupedStackCountsByOverlap[0].size()) // abort, if all bins have been collapsed to one (which should never happen with good data)
+	if (binsToCollapse < groupedStackCountsByOverlap[0].size()) // abort, if all bins have been collapsed to one (which should never happen with good data)
 	{
 		binsToCollapse++;
 
@@ -451,13 +451,21 @@ void collapseBins(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap)
 		}
 
 		// check if there are any empty bins
-		for (TGroupedStackCountsByOverlap::iterator i = collapsed.begin(); i != collapsed.end(); ++i)
-			for (TGroupedStackCounts::iterator j = i->begin(); j != i->end(); ++j)
-				for (vector< vector< vector< float > > >::iterator k = j->begin(); k != j->end(); ++k)
-					for (vector< vector< float > >::iterator l = k->begin(); l != k->end(); ++l)
-						for (vector< float >::iterator m = l->begin(); m != l->end(); ++m)
-							if (*m <= 0)
-								goto collapse_bins_loop; // if there are still empty bins, collapse even more bins until there are no empty bins anymore
+		for (unsigned int bin = 0; bin < collapsed[0].size(); bin++)
+			for (unsigned int i = 0; i < collapsed[0][bin].size(); i++)
+				for (unsigned int j = 0; j < collapsed[0][bin][i].size(); j++)
+					for (unsigned int k = 0; k < collapsed[0][bin][i][j].size(); ++k)
+					{
+						bool allBinsEmpty = true;
+						for (unsigned int overlap = 0; (overlap < collapsed.size()) && allBinsEmpty; overlap++)
+						{
+							if (overlap != PING_PONG_OVERLAP)
+								if (collapsed[overlap][bin][i][j][k] > 0)
+									allBinsEmpty = false;
+						}
+						if (allBinsEmpty)
+							goto collapse_bins_loop; // if there are still empty bins, collapse even more bins until there are no empty bins anymore
+					}
 	} // loop terminates when all bins have a value > 0
 cout << "binsToCollapse" << binsToCollapse;
 for (unsigned int overlap = 0; overlap < collapsed.size(); overlap++) {
