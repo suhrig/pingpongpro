@@ -414,7 +414,7 @@ void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreM
 		{
 			for (TCountsContig::iterator positionPlusStrand = contigPlusStrand->second.begin(); positionPlusStrand != contigPlusStrand->second.end(); ++positionPlusStrand)
 			{
-				vector< TCountsPosition* > stacksOnMinusStrand(MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP + 1);
+				vector< TCountsContig::iterator > stacksOnMinusStrand(MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP + 1, contigMinusStrand->second.end());
 				float meanStackHeightInVicinity = 0;
 				float maxStackHeightInVicinity = 0;
 				for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
@@ -428,7 +428,7 @@ void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreM
 						if (positionMinusStrand->second.reads > maxStackHeightInVicinity)
 							maxStackHeightInVicinity = positionMinusStrand->second.reads;
 						// remember the stacks that we found, so we do not have to search them again
-						stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP] = &(positionMinusStrand->second);
+						stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP] = positionMinusStrand;
 					}
 				}
 				meanStackHeightInVicinity /= stacksOnMinusStrand.size();
@@ -439,10 +439,10 @@ void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreM
 
 					for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
 					{
-						if (stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP])
+						if (stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP] != contigMinusStrand->second.end())
 						{
 							// calculate score based on heights of overlapping stacks
-							float heightScore = heightScorePlus * heightScoreMap[0.5 + stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP]->reads];
+							float heightScore = heightScorePlus * heightScoreMap[0.5 + stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP]->second.reads];
 							// find the bin for the score
 							unsigned int heightScoreBin =
 								static_cast<int>(0.5 // add 0.5 for arithmetic rounding when casting float to int
@@ -450,7 +450,7 @@ void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreM
 								/ maxHeightScore * (groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP].size() - 1)); // assign every score to a bin
 
 							// calculate score based on how much higher the stack is compared to the stacks in the vicinity
-							float localHeightScore = (stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP]->reads - (meanStackHeightInVicinity - stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP]->reads/stacksOnMinusStrand.size())) / maxStackHeightInVicinity;
+							float localHeightScore = (stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP]->second.reads - (meanStackHeightInVicinity - stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP]->second.reads/stacksOnMinusStrand.size())) / maxStackHeightInVicinity;
 							// 0.2 seems to be the magical threshold that best segregates ping-pong overlaps from arbitrary overlaps
 							unsigned int localHeightScoreBin = (localHeightScore < 0.2) ? IS_BELOW_COVERAGE : IS_ABOVE_COVERAGE;
 
@@ -459,12 +459,12 @@ void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreM
 								// calculate score based on whether the stack on the + strand has Uridine at the 5' end
 								unsigned int uridinePlusBin = (positionPlusStrand->second.UAt5PrimeEnd) ? IS_URIDINE : IS_NOT_URIDINE;
 								// calculate score based on whether the stack on the - strand has Uridine at the 5' end
-								unsigned int uridineMinusBin = (stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP]->UAt5PrimeEnd) ? IS_URIDINE : IS_NOT_URIDINE;
+								unsigned int uridineMinusBin = (stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP]->second.UAt5PrimeEnd) ? IS_URIDINE : IS_NOT_URIDINE;
 								// increase bin counter
 								groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP][heightScoreBin][uridinePlusBin][uridineMinusBin][localHeightScoreBin]++;
 
 								// keep a list of putative ping-pong signatures, so we can analyze later, which of them are (likely) true
-								pingPongOverlapsPerGenome[contigPlusStrand->first].push_back(TPingPongOverlap(positionPlusStrand->first, heightScoreBin, localHeightScoreBin, uridinePlusBin, uridineMinusBin, positionPlusStrand->second.reads, stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP]->reads));
+								pingPongOverlapsPerGenome[contigPlusStrand->first].push_back(TPingPongOverlap(positionPlusStrand->first, heightScoreBin, localHeightScoreBin, uridinePlusBin, uridineMinusBin, positionPlusStrand->second.reads, stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP]->second.reads));
 							}
 							else
 							{
@@ -475,12 +475,20 @@ void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreM
 								groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP][heightScoreBin][IS_URIDINE][IS_NOT_URIDINE][localHeightScoreBin] += URIDINE_PROBABILITY * (1-URIDINE_PROBABILITY);
 								groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP][heightScoreBin][IS_NOT_URIDINE][IS_NOT_URIDINE][localHeightScoreBin] += (1-URIDINE_PROBABILITY) * (1-URIDINE_PROBABILITY);
 							}
-							//todo: free memory
 						}
 					}
 				}
+
+				// free memory of stack on + strand
+				contigPlusStrand->second.erase(positionPlusStrand);
 			}
+
+			// free memory of contig on - strand
+			readCounts[STRAND_MINUS].erase(contigMinusStrand);
 		}
+
+		// free memory of contig on + strand
+		readCounts[STRAND_PLUS].erase(contigPlusStrand);
 	}
 }
 
@@ -489,6 +497,9 @@ void collapseBins(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPi
 {
 	// create a new container to hold the collapsed bin counts
 	TGroupedStackCountsByOverlap collapsed = groupedStackCountsByOverlap;
+
+	// keep track of which bins are mapped to which collapsed bins
+	vector< unsigned int > oldBinCollapsedBinMap(groupedStackCountsByOverlap.begin()->size());
 
 	unsigned int collapsedBin = 0;
 	unsigned int bin = 0;
@@ -517,11 +528,7 @@ void collapseBins(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPi
 								if (collapsed[overlap][collapsedBin][i][j][k] <= 0)
 									emptyBins++;
 
-							// adjust bins of cached ping-pong signatures
-							for (TPingPongOverlapsPerGenome::iterator contig = pingPongOverlapsPerGenome.begin(); contig != pingPongOverlapsPerGenome.end(); ++contig)
-								for (TPingPongOverlapsPerContig::iterator pingPongOverlap = contig->second.begin(); pingPongOverlap != contig->second.end(); ++pingPongOverlap)
-									if (pingPongOverlap->heightScoreBin == bin)
-										pingPongOverlap->heightScoreBin = collapsedBin;
+							oldBinCollapsedBinMap[bin] = collapsedBin;
 						}
 
 			bin++;
@@ -534,6 +541,14 @@ void collapseBins(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPi
 	// shrink container to new number of bins
 	for (TGroupedStackCountsByOverlap::iterator i = collapsed.begin(); i != collapsed.end(); ++i)
 		i->resize(collapsedBin);
+
+	// adjust bins of cached ping-pong signatures
+	for (int oldBin = oldBinCollapsedBinMap.size() - 1; oldBin >= 0; oldBin++)
+		oldBinCollapsedBinMap[oldBin] = oldBinCollapsedBinMap[oldBinCollapsedBinMap[oldBin]];
+	for (TPingPongOverlapsPerGenome::iterator contig = pingPongOverlapsPerGenome.begin(); contig != pingPongOverlapsPerGenome.end(); ++contig)
+		for (TPingPongOverlapsPerContig::iterator pingPongOverlap = contig->second.begin(); pingPongOverlap != contig->second.end(); ++pingPongOverlap)
+			if (pingPongOverlap->heightScoreBin == bin)
+				pingPongOverlap->heightScoreBin = collapsedBin;
 
 	// return collapsed bins as result
 	groupedStackCountsByOverlap = collapsed;
