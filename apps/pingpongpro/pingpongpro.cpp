@@ -484,11 +484,20 @@ void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreM
 			}
 
 			// free memory of contig on - strand
+			contigMinusStrand->second.clear();
 			readCounts[STRAND_MINUS].erase(contigMinusStrand);
 		}
 
 		// free memory of contig on + strand
+		contigPlusStrand->second.clear();
 		readCounts[STRAND_PLUS].erase(contigPlusStrand);
+	}
+
+	// free the rest of memory that might potentially not have been freed yet
+	for (TCountsStrand::iterator contigMinusStrand = readCounts[STRAND_MINUS].begin(); contigMinusStrand != readCounts[STRAND_MINUS].end(); ++contigMinusStrand)
+	{
+		contigMinusStrand->second.clear();
+		readCounts[STRAND_MINUS].erase(contigMinusStrand);
 	}
 }
 
@@ -543,12 +552,11 @@ void collapseBins(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPi
 		i->resize(collapsedBin);
 
 	// adjust bins of cached ping-pong signatures
-	for (int oldBin = oldBinCollapsedBinMap.size() - 1; oldBin >= 0; oldBin++)
+	for (int oldBin = oldBinCollapsedBinMap.size() - 1; oldBin >= 0; oldBin--)
 		oldBinCollapsedBinMap[oldBin] = oldBinCollapsedBinMap[oldBinCollapsedBinMap[oldBin]];
 	for (TPingPongOverlapsPerGenome::iterator contig = pingPongOverlapsPerGenome.begin(); contig != pingPongOverlapsPerGenome.end(); ++contig)
 		for (TPingPongOverlapsPerContig::iterator pingPongOverlap = contig->second.begin(); pingPongOverlap != contig->second.end(); ++pingPongOverlap)
-			if (pingPongOverlap->heightScoreBin == bin)
-				pingPongOverlap->heightScoreBin = collapsedBin;
+			pingPongOverlap->heightScoreBin = oldBinCollapsedBinMap[pingPongOverlap->heightScoreBin];
 
 	// return collapsed bins as result
 	groupedStackCountsByOverlap = collapsed;
