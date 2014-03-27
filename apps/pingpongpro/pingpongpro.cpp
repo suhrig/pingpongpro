@@ -40,8 +40,8 @@ struct AppOptions
 {
 	bool bedGraph;
 	TInputFiles inputFiles;
-	unsigned int minReadLength;
-	unsigned int maxReadLength;
+	unsigned int minAlignmentLength;
+	unsigned int maxAlignmentLength;
 	unsigned int minStackHeight;
 	TCountMultiHits countMultiHits;
 	CharString output;
@@ -97,7 +97,7 @@ typedef vector< vector< vector< vector< float > > > > TGroupedStackCounts;
 typedef vector< TGroupedStackCounts > TGroupedStackCountsByOverlap;
 
 // todo: description
-struct TPingPongOverlap
+struct TPingPongSignature
 {
 	unsigned int position: 32; // position on contig where the ping-pong overlap is located
 	unsigned int heightScoreBin: 29; // must be big enough to hold <HEIGHT_SCORE_BINS>
@@ -109,28 +109,30 @@ struct TPingPongOverlap
 	float fdr; // chances of this putative ping-pong overlap being a false discovery
 
 	// constructor to initialize with values
-	TPingPongOverlap(unsigned int position, unsigned int heightScoreBin, unsigned int localHeightScoreBin, unsigned int UAt5PrimeEndOnPlusStrandBin, unsigned int UAt5PrimeEndOnMinusStrandBin, unsigned int readsOnPlusStrand, unsigned int readsOnMinusStrand):
+	TPingPongSignature(unsigned int position, unsigned int heightScoreBin, unsigned int localHeightScoreBin, unsigned int UAt5PrimeEndOnPlusStrandBin, unsigned int UAt5PrimeEndOnMinusStrandBin, unsigned int readsOnPlusStrand, unsigned int readsOnMinusStrand):
 		position(position), heightScoreBin(heightScoreBin), localHeightScoreBin(localHeightScoreBin), UAt5PrimeEndOnPlusStrandBin(UAt5PrimeEndOnPlusStrandBin), UAt5PrimeEndOnMinusStrandBin(UAt5PrimeEndOnMinusStrandBin), readsOnPlusStrand(readsOnPlusStrand), readsOnMinusStrand(readsOnMinusStrand), fdr(0)
 	{
 	}
 
 	// copy constructor (needed to add instance to a STL list)
-	TPingPongOverlap(const TPingPongOverlap &pingPongOverlap)
+	TPingPongSignature(const TPingPongSignature &pingPongSignature)
 	{
-		position = pingPongOverlap.position;
-		heightScoreBin = pingPongOverlap.heightScoreBin;
-		localHeightScoreBin = pingPongOverlap.localHeightScoreBin;
-		UAt5PrimeEndOnPlusStrandBin = pingPongOverlap.UAt5PrimeEndOnPlusStrandBin;
-		UAt5PrimeEndOnMinusStrandBin = pingPongOverlap.UAt5PrimeEndOnMinusStrandBin;
-		readsOnPlusStrand = pingPongOverlap.readsOnPlusStrand;
-		readsOnMinusStrand = pingPongOverlap.readsOnMinusStrand;
-		fdr = pingPongOverlap.fdr;
+		position = pingPongSignature.position;
+		heightScoreBin = pingPongSignature.heightScoreBin;
+		localHeightScoreBin = pingPongSignature.localHeightScoreBin;
+		UAt5PrimeEndOnPlusStrandBin = pingPongSignature.UAt5PrimeEndOnPlusStrandBin;
+		UAt5PrimeEndOnMinusStrandBin = pingPongSignature.UAt5PrimeEndOnMinusStrandBin;
+		readsOnPlusStrand = pingPongSignature.readsOnPlusStrand;
+		readsOnMinusStrand = pingPongSignature.readsOnMinusStrand;
+		fdr = pingPongSignature.fdr;
 	}
 };
-// type to store all ping-pong overlaps of a single contig
-typedef list< TPingPongOverlap > TPingPongOverlapsPerContig;
-// type to store all ping-pong overlaps of the entire genome
-typedef map< unsigned int, TPingPongOverlapsPerContig > TPingPongOverlapsPerGenome;
+// type to store all ping-pong signatures of a single contig
+typedef list< TPingPongSignature > TPingPongSignaturesPerContig;
+// type to store all ping-pong signatures of the entire genome
+typedef map< unsigned int, TPingPongSignaturesPerContig > TPingPongSignaturesPerGenome;
+// type to store all ping-pong signatures with a certain overlap (including overlaps other than 10 nt, i.e., no real ping-pong signatures)
+typedef vector< TPingPongSignaturesPerGenome > TPingPongSignaturesByOverlap;
 
 // ==========================================================================
 // Functions
@@ -159,12 +161,12 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	setDefaultValue(parser, "input", "-");
 	setValidValues(parser, "input", ".bam .sam -");
 
-	addOption(parser, ArgParseOption("l", "min-read-length", "Ignore reads in the input file that are shorter than the specified length.", ArgParseArgument::INTEGER, "LENGTH", true));
-	setDefaultValue(parser, "min-read-length", 24);
-	setMinValue(parser, "min-read-length", "1");
-	addOption(parser, ArgParseOption("L", "max-read-length", "Ignore reads in the input file that are longer than the specified length.", ArgParseArgument::INTEGER, "LENGTH", true));
-	setDefaultValue(parser, "max-read-length", 32);
-	setMinValue(parser, "max-read-length", "1");
+	addOption(parser, ArgParseOption("l", "min-alignment-length", "Ignore alignments in the input file that are shorter than the specified length.", ArgParseArgument::INTEGER, "LENGTH", true));
+	setDefaultValue(parser, "min-alignment-length", 24);
+	setMinValue(parser, "min-alignment-length", "1");
+	addOption(parser, ArgParseOption("L", "max-alignment-length", "Ignore alignments in the input file that are longer than the specified length.", ArgParseArgument::INTEGER, "LENGTH", true));
+	setDefaultValue(parser, "max-alignment-length", 32);
+	setMinValue(parser, "max-alignment-length", "1");
 
 	addOption(parser, ArgParseOption("m", "multi-hits", "How to count multi-mapping reads.", ArgParseArgument::STRING, "METHOD", true));
 	setDefaultValue(parser, "multi-hits", "weighted");
@@ -212,11 +214,11 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 		options.countMultiHits = multiHitsWeighted;
 	}
 	getOptionValue(options.minStackHeight, parser, "min-stack-height");
-	getOptionValue(options.minReadLength, parser, "min-read-length");
-	getOptionValue(options.maxReadLength, parser, "max-read-length");
-	if (options.minReadLength > options.maxReadLength)
+	getOptionValue(options.minAlignmentLength, parser, "min-alignment-length");
+	getOptionValue(options.maxAlignmentLength, parser, "max-alignment-length");
+	if (options.minAlignmentLength > options.maxAlignmentLength)
 	{
-		cerr << getAppName(parser) << ": maximum read length (" << options.maxReadLength << ") must not be lower than minimum read length (" << options.minReadLength << ")" << endl;
+		cerr << getAppName(parser) << ": maximum alignment length (" << options.maxAlignmentLength << ") must not be lower than minimum alignment length (" << options.minAlignmentLength << ")" << endl;
 		return ArgumentParser::PARSE_ERROR;
 	}
 	getOptionValue(options.output, parser, "output");
@@ -251,10 +253,10 @@ unsigned int stopwatch(const string &operation, unsigned int verbosity)
 	}
 	if (verbosity >= 3)
 	{
-		if (elapsedSeconds > 0)
-			cerr << "done (" << elapsedSeconds << " seconds)" << endl;
-		else
+		if (operation != "")
 			cerr << operation << " ... ";
+		else
+			cerr << "done (" << elapsedSeconds << " seconds)" << endl;
 	}
 	cerr.flush();
 	return elapsedSeconds;
@@ -270,7 +272,7 @@ unsigned int stopwatch(unsigned int verbosity)
 //   bamFile: the BAM/SAM file from where to load the reads
 //   readCounts: stats for positions were reads on the minus strand overlap the 5' ends of reads on the plus strand
 // todo: document parameters
-int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCounts, unsigned int minReadLength, unsigned int maxReadLength, TCountMultiHits countMultiHits)
+int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCounts, unsigned int minAlignmentLength, unsigned int maxAlignmentLength, TCountMultiHits countMultiHits)
 {
 	TCountsPosition *position;
 
@@ -283,10 +285,20 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCounts, unsigned 
 			return 1;
 		}
 
-		if ((record.beginPos != BamAlignmentRecord::INVALID_POS) && (record.beginPos != -1) && // skip unmapped reads
-		    (length(record.seq) >= minReadLength) && (length(record.seq) <= maxReadLength)) // skip reads which are not within the specified length range
-
+		if ((record.beginPos != BamAlignmentRecord::INVALID_POS) && (record.beginPos != -1)) // skip unmapped reads
 		{
+			// calculate length of alignment using CIGAR string
+			size_t alignmentLength = 0;
+			for (unsigned int cigarIndex = 0; cigarIndex < length(record.cigar); ++cigarIndex)
+			{
+				if ((record.cigar[cigarIndex].operation == 'M') || (record.cigar[cigarIndex].operation == 'N') || (record.cigar[cigarIndex].operation == 'D') || (record.cigar[cigarIndex].operation == '=') || (record.cigar[cigarIndex].operation == 'X')) // these CIGAR elements indicate alignment
+					alignmentLength += record.cigar[cigarIndex].count;
+			}
+
+			// skip read, if alignment is too long or too short
+			if ((alignmentLength < minAlignmentLength) || (alignmentLength > maxAlignmentLength))
+				continue;
+
 			// the stack height is increased by the value of this variable (depends on how multi-hits are handled)
 			float readWeight;
 
@@ -321,14 +333,6 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCounts, unsigned 
 
 			if (hasFlagRC(record)) // read maps to minus strand
 			{
-				// calculate length of alignment using CIGAR string
-				size_t alignmentLength = 0;
-				for (unsigned int cigarIndex = 0; cigarIndex < length(record.cigar); ++cigarIndex)
-				{
-					if ((record.cigar[cigarIndex].operation == 'M') || (record.cigar[cigarIndex].operation == 'N') || (record.cigar[cigarIndex].operation == 'D') || (record.cigar[cigarIndex].operation == '=') || (record.cigar[cigarIndex].operation == 'X')) // these CIGAR elements indicate alignment
-						alignmentLength += record.cigar[cigarIndex].count;
-				}
-
 				// get a pointer to counter of the position of the read
 				position = &(readCounts[STRAND_MINUS][record.rID][record.beginPos+alignmentLength]);
 
@@ -392,7 +396,7 @@ void getUridineFrequency(TCountsGenome &readCounts, float &uridineFrequency)
 }
 
 // todo: description
-void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreMap, float uridineFrequency, TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPingPongOverlapsPerGenome &pingPongOverlapsPerGenome)
+void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreMap, float uridineFrequency, TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPingPongSignaturesByOverlap &pingPongSignaturesByOverlap)
 {
 	// the following loop initializes a multi-dimensional array of stack counts with the following boundaries:
 	// MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP + 1 (one for each possible overlap)
@@ -415,6 +419,8 @@ void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreM
 			}
 		}
 	}
+
+	pingPongSignaturesByOverlap.resize(MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP + 1);
 
 	// find the highest possible score that two overlapping stacks can get
 	float maxHeightScore = 0;
@@ -481,7 +487,7 @@ void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreM
 								groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP][heightScoreBin][uridinePlusBin][uridineMinusBin][localHeightScoreBin]++;
 
 								// keep a list of putative ping-pong signatures, so we can analyze later, which of them are (likely) true
-								pingPongOverlapsPerGenome[contigPlusStrand->first].push_back(TPingPongOverlap(positionPlusStrand->first, heightScoreBin, localHeightScoreBin, uridinePlusBin, uridineMinusBin, positionPlusStrand->second.reads, stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP]->second.reads));
+								pingPongSignaturesByOverlap[overlap + MIN_ARBITRARY_OVERLAP][contigPlusStrand->first].push_back(TPingPongSignature(positionPlusStrand->first, heightScoreBin, localHeightScoreBin, uridinePlusBin, uridineMinusBin, positionPlusStrand->second.reads, stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP]->second.reads));
 							}
 							else
 							{
@@ -491,6 +497,9 @@ void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreM
 								groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP][heightScoreBin][IS_NOT_URIDINE][IS_URIDINE][localHeightScoreBin] += (1-uridineFrequency) * uridineFrequency;
 								groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP][heightScoreBin][IS_URIDINE][IS_NOT_URIDINE][localHeightScoreBin] += uridineFrequency * (1-uridineFrequency);
 								groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP][heightScoreBin][IS_NOT_URIDINE][IS_NOT_URIDINE][localHeightScoreBin] += (1-uridineFrequency) * (1-uridineFrequency);
+
+								// keep a list of putative ping-pong signatures, so we can analyze later, which of them are (likely) true
+								pingPongSignaturesByOverlap[overlap + MIN_ARBITRARY_OVERLAP][contigPlusStrand->first].push_back(TPingPongSignature(positionPlusStrand->first, 0, 0, IS_URIDINE, IS_URIDINE, 0, 0));
 							}
 						}
 					}
@@ -512,7 +521,7 @@ void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreM
 }
 
 //todo: description
-void collapseBins(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPingPongOverlapsPerGenome &pingPongOverlapsPerGenome)
+void collapseBins(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPingPongSignaturesByOverlap &pingPongSignaturesByOverlap)
 {
 	// create a new container to hold the collapsed bin counts
 	TGroupedStackCountsByOverlap collapsed = groupedStackCountsByOverlap;
@@ -564,9 +573,10 @@ void collapseBins(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPi
 	// adjust bins of cached ping-pong signatures
 	for (int oldBin = oldBinCollapsedBinMap.size() - 1; oldBin >= 0; oldBin--)
 		oldBinCollapsedBinMap[oldBin] = oldBinCollapsedBinMap[oldBinCollapsedBinMap[oldBin]];
-	for (TPingPongOverlapsPerGenome::iterator contig = pingPongOverlapsPerGenome.begin(); contig != pingPongOverlapsPerGenome.end(); ++contig)
-		for (TPingPongOverlapsPerContig::iterator pingPongOverlap = contig->second.begin(); pingPongOverlap != contig->second.end(); ++pingPongOverlap)
-			pingPongOverlap->heightScoreBin = oldBinCollapsedBinMap[pingPongOverlap->heightScoreBin];
+	for (TPingPongSignaturesByOverlap::iterator pingPongSignaturesPerGenome = pingPongSignaturesByOverlap.begin(); pingPongSignaturesPerGenome != pingPongSignaturesByOverlap.end(); ++pingPongSignaturesPerGenome)
+		for (TPingPongSignaturesPerGenome::iterator contig = pingPongSignaturesPerGenome->begin(); contig != pingPongSignaturesPerGenome->end(); ++contig)
+			for (TPingPongSignaturesPerContig::iterator pingPongSignature = contig->second.begin(); pingPongSignature != contig->second.end(); ++pingPongSignature)
+				pingPongSignature->heightScoreBin = oldBinCollapsedBinMap[pingPongSignature->heightScoreBin];
 
 	// return collapsed bins as result
 	groupedStackCountsByOverlap = collapsed;
@@ -708,15 +718,15 @@ void plotHistograms(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, u
 }
 
 //todo: description
-void calculateFDRs(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPingPongOverlapsPerGenome &pingPongOverlapsPerGenome)
+void calculateFDRs(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPingPongSignaturesByOverlap &pingPongSignaturesByOverlap)
 {
-	TGroupedStackCounts FDRs = groupedStackCountsByOverlap[PING_PONG_OVERLAP]; // the assignment shall only ensure that <FDRs> has the same dimensions as one <groupedStackCount>
+	TGroupedStackCountsByOverlap FDRs = groupedStackCountsByOverlap; // the assignment shall only ensure that <FDRs> has the same dimensions as <groupedStackCountsByOverlap>
 
 	// estimate how many of the putative ping-pong signatures are random noise
-	for (unsigned int i = 0; i < groupedStackCountsByOverlap[PING_PONG_OVERLAP].size(); i++)
-		for (unsigned int j = 0; j < groupedStackCountsByOverlap[PING_PONG_OVERLAP][i].size(); j++)
-			for (unsigned int k = 0; k < groupedStackCountsByOverlap[PING_PONG_OVERLAP][i][j].size(); k++)
-				for (unsigned int l = 0; l < groupedStackCountsByOverlap[PING_PONG_OVERLAP][i][j][k].size(); l++)
+	for (unsigned int i = 0; i < groupedStackCountsByOverlap.begin()->size(); i++)
+		for (unsigned int j = 0; j < (*groupedStackCountsByOverlap.begin())[i].size(); j++)
+			for (unsigned int k = 0; k < (*groupedStackCountsByOverlap.begin())[i][j].size(); k++)
+				for (unsigned int l = 0; l < (*groupedStackCountsByOverlap.begin())[i][j][k].size(); l++)
 				{
 					float meanOfArbitraryOverlaps = 0;
 					float stdDevOfArbitraryOverlaps = 0;
@@ -733,34 +743,39 @@ void calculateFDRs(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TP
 							stdDevOfArbitraryOverlaps += pow(groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP][i][j][k][l] - meanOfArbitraryOverlaps, 2);
 					stdDevOfArbitraryOverlaps = sqrt(1 / (groupedStackCountsByOverlap.size() - 1 /* minus 1 for corrected sample STDDEV */) * stdDevOfArbitraryOverlaps);
 
-					const double approximationAccuracy = 0.01;
-					const double approximationRange = 5;
-					double fdr = 0;
-					for (double x = -approximationRange; x <= +approximationRange; x += approximationAccuracy)
+					// calculate expected number of false positives among the putative ping-pong signatures
+					for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
 					{
-						if (x >= (groupedStackCountsByOverlap[PING_PONG_OVERLAP][i][j][k][l] - meanOfArbitraryOverlaps) / stdDevOfArbitraryOverlaps)
+						const double approximationAccuracy = 0.01;
+						const double approximationRange = 5;
+						double fdr = 0;
+						for (double x = -approximationRange; x <= +approximationRange; x += approximationAccuracy)
 						{
-							fdr += approximationAccuracy * 1/sqrt(2*M_PI)*exp(-0.5*x*x) * 1;
+							if (x >= (groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP][i][j][k][l] - meanOfArbitraryOverlaps) / stdDevOfArbitraryOverlaps)
+							{
+								fdr += approximationAccuracy * 1/sqrt(2*M_PI)*exp(-0.5*x*x) * 1;
+							}
+							else
+							{
+								fdr += approximationAccuracy * 1/sqrt(2*M_PI)*exp(-0.5*x*x) * (x * stdDevOfArbitraryOverlaps + meanOfArbitraryOverlaps) / groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP][i][j][k][l];
+							}
 						}
-						else
-						{
-							fdr += approximationAccuracy * 1/sqrt(2*M_PI)*exp(-0.5*x*x) * (x * stdDevOfArbitraryOverlaps + meanOfArbitraryOverlaps) / groupedStackCountsByOverlap[PING_PONG_OVERLAP][i][j][k][l];
-						}
+						FDRs[overlap + MIN_ARBITRARY_OVERLAP][i][j][k][l] = fdr;
 					}
-					FDRs[i][j][k][l] = fdr;
 /*for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
 	cout << groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP][i][j][k][l] << " ";
 cout << fdr << endl;*/
 				}
 
-	// assign a FDR to every putative ping-pong stack
-	for (TPingPongOverlapsPerGenome::iterator contig = pingPongOverlapsPerGenome.begin(); contig != pingPongOverlapsPerGenome.end(); ++contig)
-		for (TPingPongOverlapsPerContig::iterator pingPongOverlap = contig->second.begin(); pingPongOverlap != contig->second.end(); ++pingPongOverlap)
-			pingPongOverlap->fdr = FDRs[pingPongOverlap->heightScoreBin][pingPongOverlap->UAt5PrimeEndOnPlusStrandBin][pingPongOverlap->UAt5PrimeEndOnMinusStrandBin][pingPongOverlap->localHeightScoreBin];
+	// assign a FDR to every putative ping-pong signature
+	for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
+		for (TPingPongSignaturesPerGenome::iterator contig = pingPongSignaturesByOverlap[overlap + MIN_ARBITRARY_OVERLAP].begin(); contig != pingPongSignaturesByOverlap[overlap + MIN_ARBITRARY_OVERLAP].end(); ++contig)
+			for (TPingPongSignaturesPerContig::iterator pingPongSignature = contig->second.begin(); pingPongSignature != contig->second.end(); ++pingPongSignature)
+				pingPongSignature->fdr = FDRs[overlap + MIN_ARBITRARY_OVERLAP][pingPongSignature->heightScoreBin][pingPongSignature->UAt5PrimeEndOnPlusStrandBin][pingPongSignature->UAt5PrimeEndOnMinusStrandBin][pingPongSignature->localHeightScoreBin];
 }
 
 // todo: document parameters
-void generateBedGraph(TPingPongOverlapsPerGenome &pingPongOverlapsPerGenome, const TNameStore &bamNameStore, unsigned int minStackHeight)
+void generateBedGraph(TPingPongSignaturesPerGenome &pingPongSignaturesPerGenome, const TNameStore &bamNameStore, unsigned int minStackHeight)
 {
 	// open bedGraph files
 	ofstream readsOnPlusStrandBedGraph("reads_on_plus_strand.bedGraph");
@@ -778,13 +793,13 @@ void generateBedGraph(TPingPongOverlapsPerGenome &pingPongOverlapsPerGenome, con
 	scoreBedGraph << "track type=\"bedGraph\" name=\"scores\" description=\"scores of ping-pong stacks (1 - FDR)\" visibility=full color=0,0,0 altColor=0,0,0 priority=20" << endl;
 
 	// write a line for each ping-pong signature
-	for (TPingPongOverlapsPerGenome::iterator contig = pingPongOverlapsPerGenome.begin(); contig != pingPongOverlapsPerGenome.end(); ++contig)
-		for (TPingPongOverlapsPerContig::iterator pingPongOverlap = contig->second.begin(); pingPongOverlap != contig->second.end(); ++pingPongOverlap)
-			if ((pingPongOverlap->readsOnPlusStrand >= minStackHeight) && (pingPongOverlap->readsOnMinusStrand >= minStackHeight))
+	for (TPingPongSignaturesPerGenome::iterator contig = pingPongSignaturesPerGenome.begin(); contig != pingPongSignaturesPerGenome.end(); ++contig)
+		for (TPingPongSignaturesPerContig::iterator pingPongSignature = contig->second.begin(); pingPongSignature != contig->second.end(); ++pingPongSignature)
+			if ((pingPongSignature->readsOnPlusStrand >= minStackHeight) && (pingPongSignature->readsOnMinusStrand >= minStackHeight))
 			{
-				readsOnPlusStrandBedGraph << bamNameStore[contig->first] << " " << pingPongOverlap->position << " " << (pingPongOverlap->position+1) << " " << pingPongOverlap->readsOnPlusStrand << endl;
-				readsOnMinusStrandBedGraph << bamNameStore[contig->first] << " " << pingPongOverlap->position << " " << (pingPongOverlap->position+1) << " " << pingPongOverlap->readsOnMinusStrand << endl;
-				scoreBedGraph << bamNameStore[contig->first] << " " << pingPongOverlap->position << " " << (pingPongOverlap->position+1) << " " << (1-pingPongOverlap->fdr) << endl;
+				readsOnPlusStrandBedGraph << bamNameStore[contig->first] << " " << pingPongSignature->position << " " << (pingPongSignature->position+1) << " " << pingPongSignature->readsOnPlusStrand << endl;
+				readsOnMinusStrandBedGraph << bamNameStore[contig->first] << " " << pingPongSignature->position << " " << (pingPongSignature->position+1) << " " << pingPongSignature->readsOnMinusStrand << endl;
+				scoreBedGraph << bamNameStore[contig->first] << " " << pingPongSignature->position << " " << (pingPongSignature->position+1) << " " << (1-pingPongSignature->fdr) << endl;
 			}
 
 	// close bedGraph files
@@ -826,7 +841,7 @@ int main(int argc, char const ** argv)
 		}
 
 		// for every position in the genome, count the number of reads that start at a given position
-		if (countReadsInBamFile(bamFile, readCounts, options.minReadLength, options.maxReadLength, options.countMultiHits) != 0)
+		if (countReadsInBamFile(bamFile, readCounts, options.minAlignmentLength, options.maxAlignmentLength, options.countMultiHits) != 0)
 			return 1;
 
 		// remember @SQ header lines from BAM file for mapping of contig IDs to human-readable names
@@ -878,16 +893,16 @@ int main(int argc, char const ** argv)
 	float uridineFrequency;
 	getUridineFrequency(readCounts, uridineFrequency);
 	TGroupedStackCountsByOverlap groupedStackCountsByOverlap;
-	TPingPongOverlapsPerGenome pingPongOverlapsPerGenome;
-	countStacksByGroup(readCounts, heightScoreMap, uridineFrequency, groupedStackCountsByOverlap, pingPongOverlapsPerGenome);
+	TPingPongSignaturesByOverlap pingPongSignaturesByOverlap;
+	countStacksByGroup(readCounts, heightScoreMap, uridineFrequency, groupedStackCountsByOverlap, pingPongSignaturesByOverlap);
 	stopwatch(options.verbosity);
 
 	stopwatch("Collapsing bins", options.verbosity);
-	collapseBins(groupedStackCountsByOverlap, pingPongOverlapsPerGenome);
+	collapseBins(groupedStackCountsByOverlap, pingPongSignaturesByOverlap);
 	stopwatch(options.verbosity);
 
 	stopwatch("Calculating FDR for putative ping-pong signatures", options.verbosity);
-	calculateFDRs(groupedStackCountsByOverlap, pingPongOverlapsPerGenome);
+	calculateFDRs(groupedStackCountsByOverlap, pingPongSignaturesByOverlap);
 	stopwatch(options.verbosity);
 
 	if (options.plot)
@@ -909,12 +924,10 @@ int main(int argc, char const ** argv)
 	if (options.bedGraph)
 	{
 		stopwatch("Generating bedGraph files", options.verbosity);
-		generateBedGraph(pingPongOverlapsPerGenome, bamNameStore, options.minStackHeight);
+		generateBedGraph(pingPongSignaturesByOverlap[PING_PONG_OVERLAP], bamNameStore, options.minStackHeight);
 		stopwatch(options.verbosity);
 	}
 
 	return 0;
 }
-
-
 
