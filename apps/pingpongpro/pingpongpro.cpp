@@ -477,17 +477,15 @@ void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreM
 							// 0.2 seems to be the magical threshold that best segregates ping-pong overlaps from arbitrary overlaps
 							unsigned int localHeightScoreBin = (localHeightScore < 0.2) ? IS_BELOW_COVERAGE : IS_ABOVE_COVERAGE;
 
+							// calculate score based on whether the stack on the + strand has Uridine at the 5' end
+							unsigned int uridinePlusBin = (positionPlusStrand->second.UAt5PrimeEnd) ? IS_URIDINE : IS_NOT_URIDINE;
+							// calculate score based on whether the stack on the - strand has Uridine at the 5' end
+							unsigned int uridineMinusBin = (stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP]->second.UAt5PrimeEnd) ? IS_URIDINE : IS_NOT_URIDINE;
+
 							if (overlap == PING_PONG_OVERLAP)
 							{
-								// calculate score based on whether the stack on the + strand has Uridine at the 5' end
-								unsigned int uridinePlusBin = (positionPlusStrand->second.UAt5PrimeEnd) ? IS_URIDINE : IS_NOT_URIDINE;
-								// calculate score based on whether the stack on the - strand has Uridine at the 5' end
-								unsigned int uridineMinusBin = (stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP]->second.UAt5PrimeEnd) ? IS_URIDINE : IS_NOT_URIDINE;
 								// increase bin counter
 								groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP][heightScoreBin][uridinePlusBin][uridineMinusBin][localHeightScoreBin]++;
-
-								// keep a list of putative ping-pong signatures, so we can analyze later, which of them are (likely) true
-								pingPongSignaturesByOverlap[overlap + MIN_ARBITRARY_OVERLAP][contigPlusStrand->first].push_back(TPingPongSignature(positionPlusStrand->first, heightScoreBin, localHeightScoreBin, uridinePlusBin, uridineMinusBin, positionPlusStrand->second.reads, stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP]->second.reads));
 							}
 							else
 							{
@@ -497,10 +495,10 @@ void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreM
 								groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP][heightScoreBin][IS_NOT_URIDINE][IS_URIDINE][localHeightScoreBin] += (1-uridineFrequency) * uridineFrequency;
 								groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP][heightScoreBin][IS_URIDINE][IS_NOT_URIDINE][localHeightScoreBin] += uridineFrequency * (1-uridineFrequency);
 								groupedStackCountsByOverlap[overlap + MIN_ARBITRARY_OVERLAP][heightScoreBin][IS_NOT_URIDINE][IS_NOT_URIDINE][localHeightScoreBin] += (1-uridineFrequency) * (1-uridineFrequency);
-
-								// keep a list of putative ping-pong signatures, so we can analyze later, which of them are (likely) true
-								pingPongSignaturesByOverlap[overlap + MIN_ARBITRARY_OVERLAP][contigPlusStrand->first].push_back(TPingPongSignature(positionPlusStrand->first, 0, 0, IS_URIDINE, IS_URIDINE, 0, 0));
 							}
+
+							// keep a list of putative ping-pong signatures, so we can analyze later, which of them are (likely) true
+							pingPongSignaturesByOverlap[overlap + MIN_ARBITRARY_OVERLAP][contigPlusStrand->first].push_back(TPingPongSignature(positionPlusStrand->first, heightScoreBin, localHeightScoreBin, uridinePlusBin, uridineMinusBin, positionPlusStrand->second.reads, stacksOnMinusStrand[overlap + MIN_ARBITRARY_OVERLAP]->second.reads));
 						}
 					}
 				}
@@ -790,7 +788,7 @@ void generateBedGraph(TPingPongSignaturesPerGenome &pingPongSignaturesPerGenome,
 	// write track headers
 	readsOnPlusStrandBedGraph << "track type=\"bedGraph\" name=\"read stacks on + strand\" description=\"height of ping-pong stacks on the + strand\" visibility=full color=0,0,0 altColor=0,0,0 priority=20" << endl;
 	readsOnMinusStrandBedGraph << "track type=\"bedGraph\" name=\"read stacks on - strand\" description=\"height of ping-pong stacks on the - strand\" visibility=full color=0,0,0 altColor=0,0,0 priority=20" << endl;
-	scoreBedGraph << "track type=\"bedGraph\" name=\"scores\" description=\"scores of ping-pong stacks (1 - FDR)\" visibility=full color=0,0,0 altColor=0,0,0 priority=20" << endl;
+	scoreBedGraph << "track type=\"bedGraph\" name=\"scores\" description=\"scores of ping-pong stacks (1 - FDR)\" visibility=full color=0,0,0 altColor=0,0,0 priority=20 viewLimits=0.0:1.0 autoScale=off" << endl;
 
 	// write a line for each ping-pong signature
 	for (TPingPongSignaturesPerGenome::iterator contig = pingPongSignaturesPerGenome.begin(); contig != pingPongSignaturesPerGenome.end(); ++contig)
