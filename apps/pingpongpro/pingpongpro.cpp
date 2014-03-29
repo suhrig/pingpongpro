@@ -375,28 +375,8 @@ void mapHeightsToScores(TCountsGenome &readCounts, THeightScoreMap &heightScoreM
 				heightScoreMap[0.5 + position->second.reads] += 1;
 }
 
-void getUridineFrequency(TCountsGenome &readCounts, float &uridineFrequency)
-{
-	unsigned int stacksWithUridine = 0;
-	unsigned int stacksWithoutUridine = 0;
-	// iterate through all strands, contigs and positions to count how many stacks have uridine at the 5' end
-	for (unsigned int strand = STRAND_PLUS; strand <= STRAND_MINUS; ++strand)
-		for (TCountsStrand::iterator contig = readCounts[strand].begin(); contig != readCounts[strand].end(); ++contig)
-			for (TCountsContig::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
-				if (position->second.UAt5PrimeEnd)
-				{
-					stacksWithUridine++;
-				}
-				else
-				{
-					stacksWithoutUridine++;
-				}
-
-	uridineFrequency = static_cast<float>(stacksWithUridine) / (stacksWithUridine + stacksWithoutUridine);
-}
-
 // todo: description
-void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreMap, float uridineFrequency, TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPingPongSignaturesByOverlap &pingPongSignaturesByOverlap)
+void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreMap, TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPingPongSignaturesByOverlap &pingPongSignaturesByOverlap)
 {
 	// the following loop initializes a multi-dimensional array of stack counts with the following boundaries:
 	// MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP + 1 (one for each possible overlap)
@@ -482,20 +462,8 @@ void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreM
 							// calculate score based on whether the stack on the - strand has Uridine at the 5' end
 							unsigned int uridineMinusBin = (stacksOnMinusStrand[overlap - MIN_ARBITRARY_OVERLAP]->second.UAt5PrimeEnd) ? IS_URIDINE : IS_NOT_URIDINE;
 
-							if (overlap == PING_PONG_OVERLAP)
-							{
-								// increase bin counter
-								groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][heightScoreBin][uridinePlusBin][uridineMinusBin][localHeightScoreBin]++;
-							}
-							else
-							{
-								// We assume a fixed probability of having uridine at the 5' end of reads.
-								// Therefore, we add fractions to all bin counters.
-								groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][heightScoreBin][IS_URIDINE][IS_URIDINE][localHeightScoreBin] += uridineFrequency * uridineFrequency;
-								groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][heightScoreBin][IS_NOT_URIDINE][IS_URIDINE][localHeightScoreBin] += (1-uridineFrequency) * uridineFrequency;
-								groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][heightScoreBin][IS_URIDINE][IS_NOT_URIDINE][localHeightScoreBin] += uridineFrequency * (1-uridineFrequency);
-								groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][heightScoreBin][IS_NOT_URIDINE][IS_NOT_URIDINE][localHeightScoreBin] += (1-uridineFrequency) * (1-uridineFrequency);
-							}
+							// increase bin counter
+							groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][heightScoreBin][uridinePlusBin][uridineMinusBin][localHeightScoreBin]++;
 
 							// keep a list of putative ping-pong signatures, so we can analyze later, which of them are (likely) true
 							pingPongSignaturesByOverlap[overlap - MIN_ARBITRARY_OVERLAP][contigPlusStrand->first].push_back(TPingPongSignature(positionPlusStrand->first, heightScoreBin, localHeightScoreBin, uridinePlusBin, uridineMinusBin, positionPlusStrand->second.reads, stacksOnMinusStrand[overlap - MIN_ARBITRARY_OVERLAP]->second.reads));
@@ -895,11 +863,9 @@ int main(int argc, char const ** argv)
 	stopwatch("Binning stacks", options.verbosity);
 	THeightScoreMap heightScoreMap;
 	mapHeightsToScores(readCounts, heightScoreMap);
-	float uridineFrequency;
-	getUridineFrequency(readCounts, uridineFrequency);
 	TGroupedStackCountsByOverlap groupedStackCountsByOverlap;
 	TPingPongSignaturesByOverlap pingPongSignaturesByOverlap;
-	countStacksByGroup(readCounts, heightScoreMap, uridineFrequency, groupedStackCountsByOverlap, pingPongSignaturesByOverlap);
+	countStacksByGroup(readCounts, heightScoreMap, groupedStackCountsByOverlap, pingPongSignaturesByOverlap);
 	stopwatch(options.verbosity);
 
 	stopwatch("Collapsing bins", options.verbosity);
