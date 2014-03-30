@@ -16,6 +16,8 @@
 #include <fstream>
 #define _USE_MATH_DEFINES
 #include <cmath>
+#include <string>
+#include <sstream>
 
 using namespace std;
 using namespace seqan;
@@ -25,15 +27,19 @@ using namespace seqan;
 // ==========================================================================
 
 #if defined(WIN32) || defined(_WIN32) 
-#define PATH_SEPARATOR '\\' 
+#define PATH_delimiter '\\' 
 #else 
-#define PATH_SEPARATOR '/'
+#define PATH_delimiter '/'
 #endif
 
 // type to hold the list of input files given as arguments to the program
 typedef vector<CharString> TInputFiles;
 
+// todo: description
 enum TCountMultiHits { multiHitsWeighted, multiHitsDiscard, multiHitsUnique };
+
+// todo: description
+enum TFileFormat { fileFormatBED, fileFormatCSV, fileFormatGFF, fileFormatGTF, fileFormatTSV };
 
 // struct to store the options from the command line
 struct AppOptions
@@ -46,6 +52,7 @@ struct AppOptions
 	TCountMultiHits countMultiHits;
 	CharString output;
 	bool plot;
+	TInputFiles transposonFiles;
 	unsigned int verbosity;
 };
 
@@ -134,6 +141,45 @@ typedef map< unsigned int, TPingPongSignaturesPerContig > TPingPongSignaturesPer
 // type to store all ping-pong signatures with a certain overlap (including overlaps other than 10 nt, i.e., no real ping-pong signatures)
 typedef vector< TPingPongSignaturesPerGenome > TPingPongSignaturesByOverlap;
 
+// type to store the region of a single transposon
+struct TTransposon
+{
+	string identifier;
+	unsigned int start;
+	unsigned int end;
+	float pValue;
+
+	// constructor to initialize with values
+	TTransposon(string identifier, unsigned int start, unsigned int end):
+		identifier(identifier), start(start), end(end), pValue(0)
+	{
+	}
+
+	// copy constructor (needed to add instance to a STL list
+	TTransposon(const TTransposon &transposon)
+	{
+		identifier = transposon.identifier;
+		start = transposon.start;
+		end = transposon.end;
+		pValue = transposon.pValue;
+	}
+
+	// needed for sorting of the list by genomic position
+	inline bool operator< (const TTransposon &transposon)
+	{
+		if (start == transposon.start)
+			return end < transposon.end;
+		else
+			return start < transposon.start;
+	}
+};
+// type to store all transposons of a single contig
+typedef list< TTransposon > TTransposonsPerContig;
+// type to store all transposons of a single strand
+typedef map< unsigned int, TTransposonsPerContig > TTransposonsPerStrand;
+// type to store all transposons of the entire genome
+typedef TTransposonsPerStrand TTransposonsPerGenome[2];
+
 // ==========================================================================
 // Functions
 // ==========================================================================
@@ -175,6 +221,9 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	addOption(parser, ArgParseOption("o", "output", "Write output to specified directory. Default: current working directory.", ArgParseArgument::OUTPUTFILE, "PATH", true));
 
 	addOption(parser, ArgParseOption("p", "plot", "Generate R plots on background noise estimation. Requires Rscript. Default: off."));
+
+	addOption(parser, ArgParseOption("t", "transposons", "Check if the transposons given in the file are suppressed through ping-pong activity. \"-\" means stdin.", ArgParseArgument::INPUTFILE, "PATH", true));
+	setValidValues(parser, "transposons", ".bed .csv .gff .gtf .tsv -");
 
 	addOption(parser, ArgParseOption("v", "verbose", "Print messages to stderr about the current progress. Default: off."));
 
@@ -222,9 +271,16 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 		return ArgumentParser::PARSE_ERROR;
 	}
 	getOptionValue(options.output, parser, "output");
-	if ((length(options.output) > 0) && (options.output[length(options.output)-1] != PATH_SEPARATOR))
-		options.output += PATH_SEPARATOR; // append slash to output path, if missing
+	if ((length(options.output) > 0) && (options.output[length(options.output)-1] != PATH_delimiter))
+		options.output += PATH_delimiter; // append slash to output path, if missing
 	options.plot = isSet(parser, "plot");
+	options.transposonFiles.resize(getOptionValueCount(parser, "transposons")); // store input files in vector
+	for (vector< string >::size_type i = 0; i < options.transposonFiles.size(); i++)
+	{
+		getOptionValue(options.transposonFiles[i], parser, "transposons", i);
+		if (options.transposonFiles[i] == "-")
+			options.transposonFiles[i] = "/dev/stdin";
+	}
 	if (isSet(parser, "verbose"))
 	{
 		options.verbosity = 3;
@@ -506,8 +562,6 @@ void collapseBins(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPi
 					for (vector< float >::iterator l = k->begin(); l != k->end(); ++l)
 						*l = 0;
 
-
-
 		unsigned int emptyBins;
 		do {
 			emptyBins = 0;
@@ -525,7 +579,7 @@ void collapseBins(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPi
 								emptyBins++;
 						}
 
-
+			// remember with which new bin the current bin was merged
 			oldBinCollapsedBinMap[bin] = collapsedBin;
 
 			bin++;
@@ -781,7 +835,170 @@ void generateBedGraph(TPingPongSignaturesPerGenome &pingPongSignaturesPerGenome,
 	scoreBedGraph.close();
 }
 
-void predictSuppressedTransposons()
+void readTransposonsFromFile(ifstream &transposonFile, TFileFormat fileFormat, TTransposonsPerGenome &transposons, TNameStore &nameStore)
+{
+	// the following variables store the numbers of the columns of the respective fields
+	unsigned int identifierField, strandField, contigField, startField, endField;
+	int offset;
+	// character that separates columns
+	char delimiter;
+
+	switch (fileFormat)
+	{
+		case fileFormatBED:
+			identifierField = 4;
+			strandField = 6;
+			contigField = 1;
+			startField = 2;
+			endField = 3;
+			offset = 0;
+			delimiter = ' ';
+			break;
+		case fileFormatCSV:
+			identifierField = 1;
+			strandField = 2;
+			contigField = 3;
+			startField = 4;
+			endField = 5;
+			offset = 1;
+			delimiter = ',';
+			break;
+		case fileFormatGFF:
+		case fileFormatGTF:
+			identifierField = 9;
+			strandField = 7;
+			contigField = 2;
+			startField = 4;
+			endField = 5;
+			offset = 1;
+			delimiter = '\t';
+			break;
+		case fileFormatTSV:
+		default:
+			identifierField = 1;
+			strandField = 2;
+			contigField = 3;
+			startField = 4;
+			endField = 5;
+			offset = 1;
+			delimiter = '\t';
+			break;
+	}
+
+	unsigned int fieldNumber = 1;
+	string fieldValue = "";
+	string transposonIdentifier = "";
+	int transposonStrand = -1;
+	int transposonContig = -1;
+	int transposonStart = -1;
+	int transposonEnd = -1;
+	bool newLine = false;
+
+	// read the transposon file character by character
+	while (transposonFile.good())
+	{
+		char character = transposonFile.get();
+		
+		if (!transposonFile.good())
+			character = '\n'; // make sure the last line is processed, even if it does not end on a line feed
+
+		if (character == '\n')
+		{
+			newLine = true;
+			character = delimiter; // when we encounter a new line, we basically do the same as when we encounter a delimiter
+		}
+		else if ((delimiter == ' ') && (character == '\t')) // when delimiter is set to a blank, then treat any white-space (i.e., ' ' and '\t') as a delimiter
+		{
+			character = ' ';
+		}
+
+		if (character == delimiter)
+		{
+			if (!fieldValue.empty() || newLine)
+			{
+				if (fieldNumber == identifierField)
+				{
+					transposonIdentifier = fieldValue;
+				}
+				else if (fieldNumber == strandField)
+				{
+					if (fieldValue == "+")
+						transposonStrand = STRAND_PLUS;
+					else if (fieldValue == "-")
+						transposonStrand = STRAND_MINUS;
+				}
+				else if (fieldNumber == contigField)
+				{
+					for (unsigned int i = 0; (transposonContig == -1) && (i < length(nameStore)); i++)
+						if (nameStore[i] == fieldValue)
+							transposonContig = i;
+
+					if (transposonContig == -1) // the contig was not found in the name store
+					{
+						// add a new element to the name store
+						appendValue(nameStore, fieldValue);
+						transposonContig = length(nameStore) - 1;
+					}
+				}
+				else if (fieldNumber == startField)
+				{
+					transposonStart = atoi(fieldValue.c_str());
+					if ((transposonStart == 0) && (fieldValue != "0")) // a conversion error occurred
+					{
+						transposonStart = -1;
+					}
+					else
+					{
+						transposonStart -= offset; // some file formats have 0-based coordinates (offset=0), others 1-based (offset=1)
+					}
+				}
+				else if (fieldNumber == endField)
+				{
+					transposonEnd = atoi(fieldValue.c_str());
+					if ((transposonEnd == 0) && (fieldValue != "0")) // a conversion error occurred
+					{
+						transposonEnd = -1;
+					}
+					else
+					{
+						transposonEnd -= offset; // some file formats have 0-based coordinates (offset=0), others 1-based (offset=1)
+					}
+				}
+
+				if (newLine)
+				{
+					// skip lines that could not be parsed
+					if ((transposonStrand >= 0) && (transposonContig >= 0) && (transposonStart >= 0) && (transposonEnd >= 0) && !transposonIdentifier.empty())
+						transposons[transposonStrand][transposonContig].push_back(TTransposon(transposonIdentifier, transposonStart, transposonEnd));
+
+					// reset fields
+					newLine = false;
+					transposonStrand = transposonContig = transposonStart = transposonEnd = -1;
+					transposonIdentifier.clear();
+					fieldNumber = 1;
+				}
+				else
+				{
+					fieldNumber++;
+				}
+
+				fieldValue = "";
+			}
+		}
+		else 
+		{
+			if (!((character == '\r') && (transposonFile.peek() == '\n'))) // skip carriage-returns, if the next character is a line feed
+				fieldValue += character;
+		}
+	}
+
+	// sort transposons by genomic position
+	for (unsigned int strand = STRAND_PLUS; strand <= STRAND_MINUS; ++strand)
+		for (TTransposonsPerStrand::iterator contig = transposons[strand].begin(); contig != transposons[strand].end(); ++contig)
+			contig->second.sort();
+}
+
+void findSuppressedTransposons(TTransposonsPerGenome &transposons, TPingPongSignaturesByOverlap &pingPongSignaturesByOverlap, TNameStore &bamNameStore)
 {
 	
 }
@@ -847,6 +1064,43 @@ int main(int argc, char const ** argv)
 		close(bamFile);
 
 		stopwatch(options.verbosity);
+	}
+
+	// read transposons, if files are given
+	TTransposonsPerGenome transposons;
+	if (options.transposonFiles.size() > 0)
+	{
+		if (options.verbosity >= 3)
+			cerr << "Loading transposon coordinates" << endl;
+		for (TInputFiles::iterator transposonFile = options.transposonFiles.begin(); transposonFile != options.transposonFiles.end(); ++transposonFile)
+		{
+			stopwatch(toCString(*transposonFile), options.verbosity);
+
+			// try to open file
+			ifstream fileStream(toCString(*transposonFile));
+			if (fileStream.fail())
+			{
+				cerr << "Failed to open transposon file \"" << (*transposonFile) << "\"." << endl;
+				return 1;
+			}
+
+			// determine type of input file
+			TFileFormat fileFormat;
+			if (_compareExtension(toCString(*transposonFile), ".bed"))
+				fileFormat = fileFormatBED;
+			else if (_compareExtension(toCString(*transposonFile), ".csv"))
+				fileFormat = fileFormatCSV;
+			else if (_compareExtension(toCString(*transposonFile), ".gff"))
+				fileFormat = fileFormatGFF;
+			else if (_compareExtension(toCString(*transposonFile), ".gtf"))
+				fileFormat = fileFormatGTF;
+			else
+				fileFormat = fileFormatTSV;
+
+			readTransposonsFromFile(fileStream, fileFormat, transposons, bamNameStore);
+			fileStream.close();
+			stopwatch(options.verbosity);
+		}
 	}
 
 	// go to output directory
