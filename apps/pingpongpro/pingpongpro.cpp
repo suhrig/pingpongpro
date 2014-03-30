@@ -17,7 +17,6 @@
 #define _USE_MATH_DEFINES
 #include <cmath>
 #include <string>
-#include <sstream>
 
 using namespace std;
 using namespace seqan;
@@ -223,7 +222,7 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	addOption(parser, ArgParseOption("p", "plot", "Generate R plots on background noise estimation. Requires Rscript. Default: off."));
 
 	addOption(parser, ArgParseOption("t", "transposons", "Check if the transposons given in the file are suppressed through ping-pong activity. \"-\" means stdin.", ArgParseArgument::INPUTFILE, "PATH", true));
-	setValidValues(parser, "transposons", ".bed .csv .gff .gtf .tsv -");
+	setValidValues(parser, "transposons", ".bed .csv .gff .gtf .tsv");
 
 	addOption(parser, ArgParseOption("v", "verbose", "Print messages to stderr about the current progress. Default: off."));
 
@@ -276,11 +275,7 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	options.plot = isSet(parser, "plot");
 	options.transposonFiles.resize(getOptionValueCount(parser, "transposons")); // store input files in vector
 	for (vector< string >::size_type i = 0; i < options.transposonFiles.size(); i++)
-	{
 		getOptionValue(options.transposonFiles[i], parser, "transposons", i);
-		if (options.transposonFiles[i] == "-")
-			options.transposonFiles[i] = "/dev/stdin";
-	}
 	if (isSet(parser, "verbose"))
 	{
 		options.verbosity = 3;
