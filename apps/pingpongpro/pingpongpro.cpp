@@ -928,7 +928,7 @@ void readTransposonsFromFile(ifstream &transposonFile, TFileFormat fileFormat, T
 			character = ' ';
 		}
 
-		if ((character == delimiter) && !((fileFormat = fileFormatCSV) && quotesOpen))
+		if ((character == delimiter) && !((fileFormat == fileFormatCSV) && quotesOpen))
 		{
 			if (!fieldValue.empty() || newLine)
 			{
