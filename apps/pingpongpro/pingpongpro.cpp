@@ -43,7 +43,7 @@ enum TFileFormat { fileFormatBED, fileFormatCSV, fileFormatGFF, fileFormatGTF, f
 // struct to store the options from the command line
 struct AppOptions
 {
-	bool bedGraph;
+	bool browserTracks;
 	TInputFiles inputFiles;
 	unsigned int minAlignmentLength;
 	unsigned int maxAlignmentLength;
@@ -200,7 +200,7 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	setVersion(parser, "0.1");
 	setDate(parser, "Mar 2014");
 
-	addOption(parser, ArgParseOption("b", "bedgraph", "Output loci with ping-pong signature in bedGraph format. Default: off."));
+	addOption(parser, ArgParseOption("b", "browserTracks", "Generate genome browser tracks for loci with ping-pong signature and (if -t is specified) for transposons with ping-pong activity. Default: off."));
 
 	addOption(parser, ArgParseOption("s", "min-stack-height", "Omit stacks with fewer than the specified number of reads from the output.", ArgParseArgument::INTEGER, "NUMBER_OF_READS", true));
 	setDefaultValue(parser, "min-stack-height", 0);
@@ -236,7 +236,7 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 		return parserResult;
 
 	// extract options, if parsing was successful
-	options.bedGraph = isSet(parser, "bedgraph");
+	options.browserTracks = isSet(parser, "browserTracks");
 	options.inputFiles.resize(getOptionValueCount(parser, "input")); // store input files in vector
 	if (options.inputFiles.size() == 0)
 	{
@@ -803,51 +803,65 @@ void plotHistograms(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, u
 }
 
 // todo: document parameters
-//void generateBedGraph(TPingPongSignaturesPerGenome &pingPongSignaturesPerGenome, const TNameStore &bamNameStore, unsigned int minStackHeight)
-void generateBedGraph(TPingPongSignaturesByOverlap &pingPongSignaturesByOverlap, const TNameStore &bamNameStore, unsigned int minStackHeight)
+void writePingPongSignaturesToFile(TPingPongSignaturesPerGenome &pingPongSignaturesPerGenome, const TNameStore &bamNameStore, unsigned int minStackHeight, bool browserTracks)
 {
-for (unsigned int i = 0; i < pingPongSignaturesByOverlap.size(); i++)
-{
-TPingPongSignaturesPerGenome &pingPongSignaturesPerGenome = pingPongSignaturesByOverlap[i];
-	// open bedGraph files
-	stringstream ss;
-	ss << "reads_on_plus_strand_" << i << ".bedGraph";
-	ofstream readsOnPlusStrandBedGraph(ss.str().c_str());
-	ss.str(""); ss << "reads_on_minus_strand_" << i << ".bedGraph";
-	ofstream readsOnMinusStrandBedGraph(ss.str().c_str());
-	ss.str(""); ss << "score_" << i << ".bedGraph";
-	ofstream scoreBedGraph(ss.str().c_str());
-	if (readsOnPlusStrandBedGraph.fail() || readsOnMinusStrandBedGraph.fail() || scoreBedGraph.fail())
+	// open files to write ping-pong signatures to
+	ofstream signaturesTSV("ping-pong_signatures.tsv", ios_base::out);
+	ofstream readsOnPlusStrandBedGraph;
+	ofstream readsOnMinusStrandBedGraph;
+	ofstream scoresBedGraph;
+	if (browserTracks)
 	{
-		cerr << "Failed to create bedGraph files" << endl;
-		return;
+		readsOnPlusStrandBedGraph.open("ping-pong_signatures_read_stacks_on_plus_strand.bedGraph", ios_base::out);
+		readsOnMinusStrandBedGraph.open("ping-pong_signatures_read_stacks_on_minus_strand.bedGraph", ios_base::out);
+		scoresBedGraph.open("ping-pong_signatures_scores.bedGraph", ios_base::out);
+		if (readsOnPlusStrandBedGraph.fail() || readsOnMinusStrandBedGraph.fail() || scoresBedGraph.fail())
+		{
+			cerr << "Failed to create browser track files for ping-pong signatures" << endl;
+			return;
+		}
 	}
 
 	// use scientific formatting for floating point numbers
-	readsOnPlusStrandBedGraph.setf(ios::scientific, ios::floatfield);
-	readsOnMinusStrandBedGraph.setf(ios::scientific, ios::floatfield);
-	scoreBedGraph.setf(ios::scientific, ios::floatfield);
+	signaturesTSV.setf(ios::scientific, ios::floatfield);
+	if (browserTracks)
+	{
+		readsOnPlusStrandBedGraph.setf(ios::scientific, ios::floatfield);
+		readsOnMinusStrandBedGraph.setf(ios::scientific, ios::floatfield);
+		scoresBedGraph.setf(ios::scientific, ios::floatfield);
+	}
 
 	// write track headers
-	readsOnPlusStrandBedGraph << "track type=\"bedGraph\" name=\"_" << i << "read stacks on + strand\" description=\"height of ping-pong stacks on the + strand\" visibility=full color=0,0,0 altColor=0,0,0 priority=20" << endl;
-	readsOnMinusStrandBedGraph << "track type=\"bedGraph\" name=\"_" << i << "read stacks on - strand\" description=\"height of ping-pong stacks on the - strand\" visibility=full color=0,0,0 altColor=0,0,0 priority=20" << endl;
-	scoreBedGraph << "track type=\"bedGraph\" name=\"_" << i << "scores\" description=\"scores of ping-pong stacks (1 - FDR)\" visibility=full color=0,0,0 altColor=0,0,0 priority=20 viewLimits=0.0:1.0 autoScale=off" << endl;
+	signaturesTSV << "contig\tposition\tFDR\tstackHeightOnPlusStrand\tstackHeightOnMinusStrand" << endl;
+	if (browserTracks)
+	{
+		readsOnPlusStrandBedGraph << "track type=bedGraph name=\"read stacks on + strand\" description=\"height of read stacks on the + strand\" visibility=full" << endl;
+		readsOnMinusStrandBedGraph << "track type=bedGraph name=\"read stacks on - strand\" description=\"height of read stacks on the - strand\" visibility=full" << endl;
+		scoresBedGraph << "track type=bedGraph name=\"scores\" description=\"scores of ping-pong stacks (1 - FDR)\" visibility=full viewLimits=0.0:1.0 autoScale=off" << endl;
+	}
 
 	// write a line for each ping-pong signature
 	for (TPingPongSignaturesPerGenome::iterator contig = pingPongSignaturesPerGenome.begin(); contig != pingPongSignaturesPerGenome.end(); ++contig)
 		for (TPingPongSignaturesPerContig::iterator pingPongSignature = contig->second.begin(); pingPongSignature != contig->second.end(); ++pingPongSignature)
-//			if ((pingPongSignature->readsOnPlusStrand >= minStackHeight) && (pingPongSignature->readsOnMinusStrand >= minStackHeight))
+			if ((pingPongSignature->readsOnPlusStrand >= minStackHeight) && (pingPongSignature->readsOnMinusStrand >= minStackHeight))
 			{
-				readsOnPlusStrandBedGraph << bamNameStore[contig->first] << '\t' << pingPongSignature->position << '\t' << (pingPongSignature->position+1) << '\t' << pingPongSignature->readsOnPlusStrand << endl;
-				readsOnMinusStrandBedGraph << bamNameStore[contig->first] << '\t' << pingPongSignature->position << '\t' << (pingPongSignature->position+1) << '\t' << pingPongSignature->readsOnMinusStrand << endl;
-				scoreBedGraph << bamNameStore[contig->first] << '\t' << pingPongSignature->position << '\t' << (pingPongSignature->position+1) << '\t' << (1-pingPongSignature->fdr) << endl;
+				signaturesTSV << bamNameStore[contig->first] << '\t' << pingPongSignature->position << '\t' << pingPongSignature->fdr << '\t' << pingPongSignature->readsOnPlusStrand << '\t' << pingPongSignature->readsOnMinusStrand << endl;
+				if (browserTracks)
+				{
+					readsOnPlusStrandBedGraph << bamNameStore[contig->first] << '\t' << pingPongSignature->position << '\t' << (pingPongSignature->position+1) << '\t' << pingPongSignature->readsOnPlusStrand << endl;
+					readsOnMinusStrandBedGraph << bamNameStore[contig->first] << '\t' << pingPongSignature->position << '\t' << (pingPongSignature->position+1) << '\t' << pingPongSignature->readsOnMinusStrand << endl;
+					scoresBedGraph << bamNameStore[contig->first] << '\t' << pingPongSignature->position << '\t' << (pingPongSignature->position+1) << '\t' << (1-pingPongSignature->fdr) << endl;
+				}
 			}
 
-	// close bedGraph files
-	readsOnPlusStrandBedGraph.close();
-	readsOnMinusStrandBedGraph.close();
-	scoreBedGraph.close();
-}
+	// close files
+	signaturesTSV.close();
+	if (browserTracks)
+	{
+		readsOnPlusStrandBedGraph.close();
+		readsOnMinusStrandBedGraph.close();
+		scoresBedGraph.close();
+	}
 }
 
 void readTransposonsFromFile(ifstream &transposonFile, TFileFormat fileFormat, TTransposonsPerGenome &transposons, TNameStore &nameStore)
@@ -1164,24 +1178,49 @@ void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesB
 	}
 }
 
-void writeTransposonsToTSV(TTransposonsPerGenome &transposons, TNameStore &bamNameStore)
+void writeTransposonsToFile(TTransposonsPerGenome &transposons, TNameStore &bamNameStore, bool browserTracks)
 {
-	ofstream transposonsTSV("transposons.tsv");
+	// open files to write transposon data to
+	ofstream transposonsTSV("transposons.tsv", ios_base::out);
 	if (transposonsTSV.fail())
 	{
-		cerr << "Failed to create transposon file" << endl;
+		cerr << "Failed to create TSV file for transposons" << endl;
 		return;
 	}
+	ofstream transposonsBED;
+	if (browserTracks)
+	{
+		transposonsBED.open("transposons.bed", ios_base::out);
+		if (transposonsBED.fail())
+		{
+			cerr << "Failed to create browser track file for transposons" << endl;
+			return;
+		}
+	}
 
-	// use scientific formatting for floating point numbers in the output file
+	// use scientific formatting for floating point numbers in the output files
 	transposonsTSV.setf(ios::scientific, ios::floatfield);
+	if (browserTracks)
+		transposonsBED.setf(ios::scientific, ios::floatfield);
 
+	// write file headers
 	transposonsTSV << "identifier\tstrand\tcontig\tstart\tend\tpValue\tqValue\tnormalizedSignatureCount" << endl;
+	if (browserTracks)
+		transposonsBED << "track name=\"transposons\" description=\"transposons shaded by ping-pong activity (1000 * (1 - corrected p-value))\" useScore=1 visibility=dense" << endl;
+
+	// write transposon data in TSV/BED format
 	for (TTransposonsPerGenome::iterator contig = transposons.begin(); contig != transposons.end(); ++contig)
 		for (TTransposonsPerContig::iterator transposon = contig->second.begin(); transposon != contig->second.end(); ++transposon)
+		{
 			transposonsTSV << transposon->identifier << '\t' << ((transposon->strand == STRAND_PLUS) ? '+' : '-') << '\t' << bamNameStore[contig->first] << '\t' << transposon->start << '\t' << transposon->end << '\t' << transposon->pValue << '\t' << transposon->qValue << '\t' << transposon->normalizedSignatureCount << endl;
+			if (browserTracks)
+				transposonsBED << bamNameStore[contig->first] << '\t' << transposon->start << '\t' << transposon->end << '\t' << transposon->identifier << '\t' << static_cast<int>(round((1 - transposon->qValue) * 1000)) << '\t' << ((transposon->strand == STRAND_PLUS) ? '+' : '-') << endl;
+		}
 
+	// close output files
 	transposonsTSV.close();
+	if (browserTracks)
+		transposonsBED.close();
 }
 
 // program entry point
@@ -1194,7 +1233,7 @@ int main(int argc, char const ** argv)
 
 	TCountsGenome readCounts; // stats about positions where reads on the minus strand overlap with the 5' ends of reads on the plus strand
 
-	float totalReadCount = 0;
+	float totalReadCount = 0; // number of reads read from the SAM/BAM file (depending on the command-line arguments, multi-hits may count less than 1)
 
 	TNameStore bamNameStore; // structure to store contig names
 
@@ -1313,6 +1352,20 @@ int main(int argc, char const ** argv)
 	calculateFDRs(groupedStackCountsByOverlap, pingPongSignaturesByOverlap);
 	stopwatch(options.verbosity);
 
+	stopwatch("Writing ping-pong signatures to file", options.verbosity);
+	writePingPongSignaturesToFile(pingPongSignaturesByOverlap[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP], bamNameStore, options.minStackHeight, options.browserTracks);
+	stopwatch(options.verbosity);
+
+	if (options.transposonFiles.size() > 0)
+	{
+		stopwatch("Finding suppressed transposons", options.verbosity);
+		findSuppressedTransposons(pingPongSignaturesByOverlap, transposons, totalReadCount);
+		stopwatch(options.verbosity);
+		stopwatch("Writing transposons to file", options.verbosity);
+		writeTransposonsToFile(transposons, bamNameStore, options.browserTracks);
+		stopwatch(options.verbosity);
+	}
+
 	if (options.plot)
 	{
 		stopwatch("Generating R plots", options.verbosity);
@@ -1326,22 +1379,6 @@ int main(int argc, char const ** argv)
 		xAxisLabels.resize(0);
 		xAxisLabels.push_back("average"); xAxisLabels.push_back("above average");
 		plotHistograms(groupedStackCountsByOverlap, 3, "local height score", xAxisLabels);
-		stopwatch(options.verbosity);
-	}
-
-	if (options.bedGraph)
-	{
-		stopwatch("Generating bedGraph files", options.verbosity);
-//		generateBedGraph(pingPongSignaturesByOverlap[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP], bamNameStore, options.minStackHeight);
-		generateBedGraph(pingPongSignaturesByOverlap, bamNameStore, options.minStackHeight);
-		stopwatch(options.verbosity);
-	}
-
-	if (options.transposonFiles.size() > 0)
-	{
-		stopwatch("Finding suppressed transposons", options.verbosity);
-		findSuppressedTransposons(pingPongSignaturesByOverlap, transposons, totalReadCount);
-		writeTransposonsToTSV(transposons, bamNameStore);
 		stopwatch(options.verbosity);
 	}
 
