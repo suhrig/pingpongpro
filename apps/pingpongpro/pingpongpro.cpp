@@ -140,6 +140,10 @@ typedef map< unsigned int, TPingPongSignaturesPerContig > TPingPongSignaturesPer
 // type to store all ping-pong signatures with a certain overlap (including overlaps other than 10 nt, i.e., no real ping-pong signatures)
 typedef vector< TPingPongSignaturesPerGenome > TPingPongSignaturesByOverlap;
 
+// types to draw a histogram
+typedef vector< float > THistogram;
+typedef vector< THistogram > THistograms;
+
 // type to store the region of a single transposon
 struct TTransposon
 {
@@ -150,6 +154,7 @@ struct TTransposon
 	float pValue;
 	float qValue;
 	float normalizedSignatureCount;
+	THistogram histogram;
 
 	// constructor to initialize with values
 	TTransposon(string identifier, unsigned int strand, unsigned int start, unsigned int end):
@@ -167,10 +172,11 @@ struct TTransposon
 		pValue = transposon.pValue;
 		qValue = transposon.qValue;
 		normalizedSignatureCount = transposon.normalizedSignatureCount;
+		histogram = transposon.histogram;
 	}
 
 	// needed for sorting of the list by genomic position
-	inline bool operator< (const TTransposon &transposon)
+	inline bool operator<(const TTransposon &transposon)
 	{
 		if (start == transposon.start)
 			return end < transposon.end;
@@ -668,138 +674,79 @@ void calculateFDRs(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TP
 }
 
 // todo: description
-void plotHistograms(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, unsigned int dimension, const string &title, vector< string > xAxisLabels, bool logScale = false)
+void plotHistogram(const string &fileName, const vector< string > &titles, const THistograms &histograms)
 {
-	// determine size of given dimension and give histogram plot as many bars
-	unsigned int histogramBars = 0;
-	switch (dimension)
-	{
-		case 0:
-			histogramBars = groupedStackCountsByOverlap.begin()->size();
-			break;
-		case 1:
-			histogramBars = groupedStackCountsByOverlap.begin()->begin()->size();
-			break;
-		case 2:
-			histogramBars = groupedStackCountsByOverlap.begin()->begin()->begin()->size();
-			break;
-		case 3:
-			histogramBars = groupedStackCountsByOverlap.begin()->begin()->begin()->begin()->size();
-			break;
-	}
-	vector< vector< float > > histograms(groupedStackCountsByOverlap.size(), vector< float >(histogramBars, 0));
-
-	// sum up bins grouped by the given dimension
-	for (unsigned int overlap = 0; overlap < groupedStackCountsByOverlap.size(); overlap++)
-		for (unsigned int i = 0; i < groupedStackCountsByOverlap[overlap].size(); i++)
-			for (unsigned int j = 0; j < groupedStackCountsByOverlap[overlap][i].size(); j++)
-				for (unsigned int k = 0; k < groupedStackCountsByOverlap[overlap][i][j].size(); ++k)
-					for (unsigned int l = 0; l < groupedStackCountsByOverlap[overlap][i][j][k].size(); ++l)
-						switch (dimension)
-						{
-							case 0:
-								histograms[overlap][i] += groupedStackCountsByOverlap[overlap][i][j][k][l];
-								break;
-							case 1:
-								histograms[overlap][j] += groupedStackCountsByOverlap[overlap][i][j][k][l];
-								break;
-							case 2:
-								histograms[overlap][k] += groupedStackCountsByOverlap[overlap][i][j][k][l];
-								break;
-							case 3:
-								histograms[overlap][l] += groupedStackCountsByOverlap[overlap][i][j][k][l];
-								break;
-						}
-
 	// generate an R script that produces a histogram plot
-	string fileName = title;
-	replace(fileName.begin(), fileName.end(), ' ', '_'); // replace blanks in file name
-	ofstream rScript(toCString(fileName + ".R"));
+	ofstream rScript(toCString(fileName + ".R"), ios_base::out);
+	if (rScript.fail())
+	{
+		cerr << "Failed to create R script file" << endl;
+		return;
+	}
 
-	rScript << "histograms <- data.frame("; // store histogram counts in a data frame
+	rScript << "histograms = data.frame(" << endl; // store histograms in a data frame
+	rScript << "plotTitle = c("; // store plot titles in vector
+	for (unsigned int i = 0; i < titles.size(); i++)
+	{
+		rScript << "\"" << titles[i] << "\"";
+		if (i < titles.size() - 1)
+			rScript << "," << endl; // separate titles by a comma, unless it is the last one
+	}
+	rScript << ")," << endl; // close vector of plot titles
 	for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
 	{
-			// print height of bars
-			rScript << endl << "overlap_";
-			if (overlap < 0)
-				rScript << "minus_";
-			rScript << abs(overlap) << "=c(";
-			for (unsigned int bar = 0; bar < histograms[overlap-MIN_ARBITRARY_OVERLAP].size(); bar++)
-			{
-				if (bar % 10 == 0)
-					rScript << endl; // insert a line-break every once in a while, because R cannot parse very long lines
-				rScript << histograms[overlap-MIN_ARBITRARY_OVERLAP][bar];
-				if (bar < histograms[overlap-MIN_ARBITRARY_OVERLAP].size() - 1)
-					rScript << ", "; // separate values by comma, unless it is the last one
-			}
-			rScript << ")" << endl; // close column of data frame
+		// print one column in the data frame for every overlap
+		rScript << endl << "overlap_";
+		if (overlap < 0)
+			rScript << "minus_";
+		rScript << abs(overlap) << "=c(";
 
-			if (overlap < MAX_ARBITRARY_OVERLAP)
-				rScript << ", "; // separate columns of data frame by comma, unless it is the last column
+		for (unsigned int i = 0; i < histograms.size(); i++)
+		{
+			if (i % 100 == 0)
+				rScript << endl; // insert a line-break every once in a while, because R cannot parse long lines
+			rScript << histograms[i][overlap-MIN_ARBITRARY_OVERLAP];
+			if (i < histograms.size() - 1)
+				rScript << ","; // separate histogram values by comma, unless it is the last one
+		}
+
+		rScript << ")" << endl; // close column of data frame
+		if (overlap < MAX_ARBITRARY_OVERLAP)
+			rScript << ","; // separate columns of data frame by comma, unless it is the last column
 	}
-	rScript << ")" << endl; // close data frame
-
-
-	// save plot as PNG
-	rScript
-		<< "options(bitmapType='cairo')" << endl
-		<< "png('" << fileName << ".png')" << endl;
-
-	// wrap histogram counts in "log10()", if y-axis should be log-scaled
-	if (logScale)
-		rScript << "histograms <- log10(histograms)" << endl;
-
-	rScript	<< "plot(0, 0, xlim=c(0," << histograms[0].size() << "), type='n', xlab='" << title << "'";
-	
-	if (logScale)
-	{
-		rScript << ", ylim=c(0,max(histograms,0)), ylab='log10(frequency)'";
-	}
-	else
-	{
-		rScript << ", ylim=c(0,max(histograms)), ylab='frequency'";
-	}
-
-	rScript << ", xaxt='n')" << endl;
-
-	// draw x-axis
-	if (xAxisLabels.size() == 0)
-	{
-		// auto-generate x-axis based on quantiles, if no custom x-axis labels are given
-		rScript << "axis(1, at=quantile(c(0," << histograms[0].size() << "), probs = seq(0, 1, 0.2))+0.5, labels=quantile(c(0," << histograms[0].size() << "), probs = seq(0, 1, 0.2)))" << endl;
-	}
-	else
-	{
-		// use custom x-axis labels to generate x-axis
-		rScript << "axis(1, at=0:" << (xAxisLabels.size() - 1) << "+0.5, labels=c(";
-		for (unsigned int i = 0; i < xAxisLabels.size() - 1; i++)
-			rScript << "'" << xAxisLabels[i] << "', ";
-		rScript << "'" << xAxisLabels[xAxisLabels.size() - 1] << "'))" << endl;
-	}
+	rScript << ")" << endl; // close data frame of histograms
 
 	rScript
-		// draw bars for arbitrary overlaps
-		<< "for (overlap in " << MIN_ARBITRARY_OVERLAP << ":" << MAX_ARBITRARY_OVERLAP << ")" << endl
-		<< "	if (overlap != " << PING_PONG_OVERLAP << ")" << endl
-		<< "		barplot(histograms[,gsub('-', 'minus_', paste('overlap_', overlap, sep=''))], col=rgb(0,0,0,alpha=0.1), border=NA, axes=FALSE, add=TRUE, width=1, space=0)" << endl
-		// draw a red line for ping-pong overlaps
-		<< "for (bin in 1:" << histograms[0].size() << ")" << endl
-		<< "	lines(c(bin-1, bin), c(histograms[bin, 'overlap_10'], histograms[bin, 'overlap_10']), type='l', col='red', lwd=2)" << endl
-		// draw legend
-		<< "legend(x='top', c('" << PING_PONG_OVERLAP << " nt overlap', 'arbitrary overlaps'), col=c('red', 'black'), ncol=2, lwd=c(3,3), xpd=TRUE, inset=-0.1)" << endl
+	 	<< "# convert absolute values to z-scores" << endl
+		<< "means <- apply(histograms[,!colnames(histograms) %in% c('plotTitle', 'overlap_" << PING_PONG_OVERLAP << "')], 1, mean)" << endl
+		<< "sds <- apply(histograms[,!colnames(histograms) %in% c('plotTitle', 'overlap_" << PING_PONG_OVERLAP << "')], 1, sd)" << endl
+		<< "sds <- ifelse(sds < 1e-10, 1e-10, sds)" << endl
+		<< "for (column in colnames(histograms[,colnames(histograms) != 'plotTitle'])) {" << endl
+		<< "	histograms[,column] = (histograms[,column] - means) / sds" << endl
+		<< "}" << endl
+		<< "# save plots to a single PDF" << endl
+		<< "pdf('" << fileName << ".pdf', onefile=TRUE)" << endl
+		<< "par(font.lab=2, mar=c(5.1, 5.1, 5.1, 2.1))" << endl
+		<< "# draw a red bar for ping-pong signatures and a grey bar for arbitrary overlaps" << endl
+		<< "barColors <- ifelse(colnames(histograms[,colnames(histograms) != 'plotTitle']) != 'overlap_" << PING_PONG_OVERLAP << "', rgb(0.7,0.7,0.7), rgb(0.8,0.4,0.4))" << endl
+		<< "# every row of the data frame <histograms> is rendered as a barplot" << endl
+		<< "for (i in 1:nrow(histograms)) {" << endl
+		<< "	histogram <- histograms[i,]" << endl
+		<< "	plotTitle <- histogram$plotTitle" << endl
+		<< "	histogram <- c(t(histogram[, colnames(histogram) != 'plotTitle']))" << endl
+		<< "	plot(0, 0, xlim=c(0,length(histogram)), type='n', xlab='overlap', ylim=c(min(c(0, histogram)), max(histogram)), ylab='z-score', xaxt='n', main=plotTitle, cex.axis=0.75)" << endl
+		<< "	axis(1, at=1:length(histogram)-0.25, labels=" << MIN_ARBITRARY_OVERLAP << ":" << MAX_ARBITRARY_OVERLAP << ", cex.axis=0.75)" << endl
+		<< "	barplot(histogram, col=barColors, border=NA, axes=FALSE, add=TRUE, width=0.5, space=1)" << endl
+		<< "}" << endl
 		<< "garbage <- dev.off()" << endl;
 
 	// close R script
 	rScript.close();
 
 	// execute R script with "Rscript"
-	string RCommand = "Rscript '" + fileName + ".R'";
+	// running the script via the source command is faster that running it directly
+	string RCommand = "Rscript -e 'source(\"" + fileName + ".R\")'";
 	system(toCString(RCommand));
-}
-void plotHistograms(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, unsigned int dimension, const string &title, bool logScale = false)
-{
-	vector< string > xAxisLabels;
-	plotHistograms(groupedStackCountsByOverlap, dimension, title, xAxisLabels, logScale);
 }
 
 // todo: document parameters
@@ -862,6 +809,47 @@ void writePingPongSignaturesToFile(TPingPongSignaturesPerGenome &pingPongSignatu
 		readsOnMinusStrandBedGraph.close();
 		scoresBedGraph.close();
 	}
+}
+
+void generateGroupedStackCountsPlot(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap)
+{
+	int binCount =
+		groupedStackCountsByOverlap.begin()->size() *
+		groupedStackCountsByOverlap.begin()->begin()->size() *
+		groupedStackCountsByOverlap.begin()->begin()->begin()->size() *
+		groupedStackCountsByOverlap.begin()->begin()->begin()->begin()->size();
+	THistograms histograms(binCount);
+	vector< string > plotTitles(binCount);
+
+	unsigned int x = 0;
+	stringstream ss;
+	for (int i = groupedStackCountsByOverlap.begin()->size() - 1; i >= 0; i--)
+		for (unsigned int j = 0; j < (*groupedStackCountsByOverlap.begin())[i].size(); j++)
+			for (unsigned int k = 0; k < (*groupedStackCountsByOverlap.begin())[i][j].size(); k++)
+				for (unsigned int l = 0; l < (*groupedStackCountsByOverlap.begin())[i][j][k].size(); l++)
+				{
+					histograms[x].resize(groupedStackCountsByOverlap.size());
+					for (unsigned int overlap = 0; overlap < groupedStackCountsByOverlap.size(); overlap++)
+					{
+						histograms[x][overlap] = groupedStackCountsByOverlap[overlap][i][j][k][l];
+
+						ss << "z-scores of signatures with the following properties:" << endl;
+						ss << "stack height score of " << (groupedStackCountsByOverlap.begin()->size() - 1 - i) << endl;
+						if ((j == IS_URIDINE) && (k == IS_URIDINE))
+							ss << "uridine at the 5'-end on both strands" << endl;
+						else if ((j == IS_URIDINE) && (k != IS_URIDINE))
+							ss << "uridine at the 5'-end on the + strand" << endl;
+						else if ((j != IS_URIDINE) && (k == IS_URIDINE))
+							ss << "uridine at the 5'-end on the - strand" << endl;
+						else if ((j != IS_URIDINE) && (k != IS_URIDINE))
+							ss << "no uridine at the 5'-end on either strand" << endl;
+						ss << "stack height " << ((l == IS_ABOVE_COVERAGE) ? "above" : "below") << " the local coverage";
+						plotTitles[x] = ss.str();
+						ss.str("");
+					}
+					x++;
+				}
+	plotHistogram("ping-pong_signature_z-scores", plotTitles, histograms);
 }
 
 void readTransposonsFromFile(ifstream &transposonFile, TFileFormat fileFormat, TTransposonsPerGenome &transposons, TNameStore &nameStore)
@@ -1064,9 +1052,8 @@ void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesB
 
 		for (TTransposonsPerContig::iterator transposon = contig->second.begin(); transposon != contig->second.end(); ++transposon)
 		{
-			float scoreOfPingPongOverlap = 0;
-			// calculate mean transposon score of all arbitrary overlaps
-			float meanOfArbitraryOverlaps = 0;
+			// calculate score for transposon for each overlap
+			transposon->histogram.resize(positionByOverlap.size());
 			for (unsigned int overlap = 0; overlap < positionByOverlap.size(); overlap++)
 			{
 				// move iterator of ping-pong signature to start of current transposon
@@ -1086,13 +1073,17 @@ void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesB
 					}
 				}
 
-				if (overlap + MIN_ARBITRARY_OVERLAP != PING_PONG_OVERLAP) // ignore ping-pong overlaps in the mean calculation, since they would skew the result
-					meanOfArbitraryOverlaps += sumOfScores;
-				else
-					scoreOfPingPongOverlap = sumOfScores; // remember the transposon score for ping-pong overlap
+				transposon->histogram[overlap] = sumOfScores;
 			}
+
+			// calculate mean transposon score of all arbitrary overlaps
+			float meanOfArbitraryOverlaps = 0;
+			for (unsigned int overlap = 0; overlap < transposon->histogram.size(); overlap++)
+				if (overlap + MIN_ARBITRARY_OVERLAP != PING_PONG_OVERLAP) // ignore ping-pong overlaps in the mean calculation, since they would skew the result
+					meanOfArbitraryOverlaps += transposon->histogram[overlap];
 			meanOfArbitraryOverlaps = meanOfArbitraryOverlaps / (positionByOverlap.size() - 1 /* minus the one bin for ping-pong overlaps */);
-			if ((meanOfArbitraryOverlaps == 0) && (scoreOfPingPongOverlap == 0)) // there are no ping-pong signatures in the region of the transposon
+
+			if ((meanOfArbitraryOverlaps == 0) && (transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] == 0)) // there are no ping-pong signatures in the region of the transposon
 			{
 				transposon->pValue = 1;
 				transposon->qValue = 1;
@@ -1104,41 +1095,22 @@ void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesB
 				float stdDevOfArbitraryOverlaps = 0;
 				for (unsigned int overlap = 0; overlap < positionByOverlap.size(); overlap++)
 					if (overlap + MIN_ARBITRARY_OVERLAP != PING_PONG_OVERLAP) // ignore ping-pong stacks, since they would skew the result
-					{
-						// move iterator of ping-pong signature to start of current transposon
-						while ((positionByOverlap[overlap] != pingPongSignaturesByOverlap[overlap][contig->first].begin()) && (positionByOverlap[overlap]->position > transposon->start))
-							--(positionByOverlap[overlap]);
-						while ((positionByOverlap[overlap] != pingPongSignaturesByOverlap[overlap][contig->first].end()) && (positionByOverlap[overlap]->position < transposon->start))
-							++(positionByOverlap[overlap]);
-
-						// sum up the scores of all ping-pong signatures within the transposon region
-						float sumOfScores = 0;
-						if (positionByOverlap[overlap]->position >= transposon->start)
-						{
-							while ((positionByOverlap[overlap]->position <= transposon->end) && (positionByOverlap[overlap] != pingPongSignaturesByOverlap[overlap][contig->first].end()))
-							{
-								sumOfScores += (1 - positionByOverlap[overlap]->fdr);
-								++(positionByOverlap[overlap]);
-							}
-						}
-
-						stdDevOfArbitraryOverlaps += pow(sumOfScores - meanOfArbitraryOverlaps, 2);
-					}
-				stdDevOfArbitraryOverlaps = sqrt(1.0 / (positionByOverlap.size() - 1 - 1 /* minus 1 for corrected sample STDDEV */) * stdDevOfArbitraryOverlaps);
+						stdDevOfArbitraryOverlaps += pow(transposon->histogram[overlap] - meanOfArbitraryOverlaps, 2);
+				stdDevOfArbitraryOverlaps = sqrt(1.0 / (transposon->histogram.size() - 1 - 1 /* minus 1 for corrected sample STDDEV */) * stdDevOfArbitraryOverlaps);
 				if (stdDevOfArbitraryOverlaps <= 1E-10)
 					stdDevOfArbitraryOverlaps = 1E-10; // prevent division by 0, in case the STDDEV is 0
 
 				// calculate significance of transposon score of ping-pong overlap vs. arbitrary overlaps
 				const double approximationAccuracy = 0.01;
 				const double approximationRange = 5;
-				double zValue = (scoreOfPingPongOverlap - meanOfArbitraryOverlaps) / stdDevOfArbitraryOverlaps;
+				double zValue = (transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] - meanOfArbitraryOverlaps) / stdDevOfArbitraryOverlaps;
 				double pValue = 0;
 				for (double x = zValue; x <= zValue + approximationRange; x += approximationAccuracy)
 					pValue += approximationAccuracy * 1/sqrt(2*M_PI)*exp(-0.5*x*x);
 
 				transposon->pValue = pValue;
 				// the normalized signature count is the number of ping-pong signatures per kilobase per million mapped reads
-				transposon->normalizedSignatureCount = scoreOfPingPongOverlap / ((static_cast<float>(transposon->end) - transposon->start)/1000) / (totalReadCount/1000000);
+				transposon->normalizedSignatureCount = transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] / ((static_cast<float>(transposon->end) - transposon->start)/1000) / (totalReadCount/1000000);
 			}
 		}
 	}
@@ -1223,6 +1195,30 @@ void writeTransposonsToFile(TTransposonsPerGenome &transposons, TNameStore &bamN
 		transposonsBED.close();
 }
 
+void generateTransposonsPlot(TTransposonsPerGenome &transposons)
+{
+	int transposonCount = 0;
+	for (TTransposonsPerGenome::iterator contig = transposons.begin(); contig != transposons.end(); ++contig)
+		transposonCount += contig->second.size();
+
+	THistograms histograms(transposonCount);
+	vector< string > plotTitles(transposonCount);
+	stringstream ss;
+	unsigned int i = 0;
+	for (TTransposonsPerGenome::iterator contig = transposons.begin(); contig != transposons.end(); ++contig)
+		for (TTransposonsPerContig::iterator transposon = contig->second.begin(); transposon != contig->second.end(); ++transposon)
+		{
+			histograms[i] = transposon->histogram;
+			ss
+				<< "z-scores of transposon " << transposon->identifier << endl
+				<< "(p-value for overlap of " << PING_PONG_OVERLAP << " nt = " << transposon->pValue << ")";
+			plotTitles[i] = ss.str();
+			ss.str("");
+			i++;
+		}
+	plotHistogram("transposon_z-scores", plotTitles, histograms);
+}
+
 // program entry point
 int main(int argc, char const ** argv)
 {
@@ -1242,7 +1238,7 @@ int main(int argc, char const ** argv)
 		cerr << "Counting reads in SAM/BAM files" << endl;
 	for(TInputFiles::iterator inputFile = options.inputFiles.begin(); inputFile != options.inputFiles.end(); ++inputFile)
 	{
-		stopwatch(toCString(*inputFile), options.verbosity);
+		stopwatch((string("  ") + toCString(*inputFile)).c_str(), options.verbosity);
 
 		// open SAM/BAM file
 		BamStream bamFile(toCString(*inputFile));
@@ -1296,7 +1292,7 @@ int main(int argc, char const ** argv)
 			cerr << "Loading transposon coordinates" << endl;
 		for (TInputFiles::iterator transposonFile = options.transposonFiles.begin(); transposonFile != options.transposonFiles.end(); ++transposonFile)
 		{
-			stopwatch(toCString(*transposonFile), options.verbosity);
+			stopwatch((string("  ") + toCString(*transposonFile)).c_str(), options.verbosity);
 
 			// try to open file
 			ifstream fileStream(toCString(*transposonFile));
@@ -1368,17 +1364,13 @@ int main(int argc, char const ** argv)
 
 	if (options.plot)
 	{
-		stopwatch("Generating R plots", options.verbosity);
-		plotHistograms(groupedStackCountsByOverlap, 0, "height score", true);
-		vector< string > xAxisLabels;
-		xAxisLabels.push_back("uridine"); xAxisLabels.push_back("not uridine");
-		plotHistograms(groupedStackCountsByOverlap, 1, "base content at 5-prime end on forward strand", xAxisLabels);
-		xAxisLabels.resize(0);
-		xAxisLabels.push_back("uridine"); xAxisLabels.push_back("not uridine");
-		plotHistograms(groupedStackCountsByOverlap, 2, "base content at 5-prime end on reverse strand", xAxisLabels);
-		xAxisLabels.resize(0);
-		xAxisLabels.push_back("average"); xAxisLabels.push_back("above average");
-		plotHistograms(groupedStackCountsByOverlap, 3, "local height score", xAxisLabels);
+		if (options.verbosity >= 3)
+			cerr << "Generating R plots" << endl;
+		stopwatch("  Ping-pong signature z-scores", options.verbosity);
+		generateGroupedStackCountsPlot(groupedStackCountsByOverlap);
+		stopwatch(options.verbosity);
+		stopwatch("  Transposon z-scores", options.verbosity);
+		generateTransposonsPlot(transposons);
 		stopwatch(options.verbosity);
 	}
 
