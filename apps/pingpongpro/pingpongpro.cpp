@@ -673,6 +673,15 @@ void calculateFDRs(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TP
 				pingPongSignature->fdr = FDRs[overlap - MIN_ARBITRARY_OVERLAP][pingPongSignature->heightScoreBin][pingPongSignature->UAt5PrimeEndOnPlusStrandBin][pingPongSignature->UAt5PrimeEndOnMinusStrandBin][pingPongSignature->localHeightScoreBin];
 }
 
+void stringReplace(string &subjectString, const string &searchString, const string &replaceString) {
+	size_t i = 0;
+	while((i = subjectString.find(searchString, i)) != string::npos)
+	{
+	        subjectString.replace(i, searchString.length(), replaceString);
+        	i += replaceString.length(); // skip the string that we just inserted
+	}
+}
+
 // todo: description
 void plotHistogram(const string &fileName, const vector< string > &titles, const THistograms &histograms)
 {
@@ -688,7 +697,12 @@ void plotHistogram(const string &fileName, const vector< string > &titles, const
 	rScript << "plotTitle = c("; // store plot titles in vector
 	for (unsigned int i = 0; i < titles.size(); i++)
 	{
-		rScript << "\"" << titles[i] << "\"";
+		// escape all single-quotes (') and escape slashes (\) in the title
+		string title = titles[i];
+		stringReplace(title, "\\", "\\\\");
+		stringReplace(title, "'", "\\'");
+		rScript << "'" << title << "'";
+
 		if (i < titles.size() - 1)
 			rScript << "," << endl; // separate titles by a comma, unless it is the last one
 	}
@@ -1348,6 +1362,14 @@ int main(int argc, char const ** argv)
 	calculateFDRs(groupedStackCountsByOverlap, pingPongSignaturesByOverlap);
 	stopwatch(options.verbosity);
 
+	if (options.plot)
+	{
+		stopwatch("Rendering plots for ping-pong signature z-scores", options.verbosity);
+		generateGroupedStackCountsPlot(groupedStackCountsByOverlap);
+		stopwatch(options.verbosity);
+	}
+	groupedStackCountsByOverlap.clear();
+
 	stopwatch("Writing ping-pong signatures to file", options.verbosity);
 	writePingPongSignaturesToFile(pingPongSignaturesByOverlap[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP], bamNameStore, options.minStackHeight, options.browserTracks);
 	stopwatch(options.verbosity);
@@ -1360,18 +1382,12 @@ int main(int argc, char const ** argv)
 		stopwatch("Writing transposons to file", options.verbosity);
 		writeTransposonsToFile(transposons, bamNameStore, options.browserTracks);
 		stopwatch(options.verbosity);
-	}
-
-	if (options.plot)
-	{
-		if (options.verbosity >= 3)
-			cerr << "Generating R plots" << endl;
-		stopwatch("  Ping-pong signature z-scores", options.verbosity);
-		generateGroupedStackCountsPlot(groupedStackCountsByOverlap);
-		stopwatch(options.verbosity);
-		stopwatch("  Transposon z-scores", options.verbosity);
-		generateTransposonsPlot(transposons);
-		stopwatch(options.verbosity);
+		if (options.plot)
+		{
+			stopwatch("Rendering plots for transposon z-scores", options.verbosity);
+			generateTransposonsPlot(transposons);
+			stopwatch(options.verbosity);
+		}
 	}
 
 	return 0;
