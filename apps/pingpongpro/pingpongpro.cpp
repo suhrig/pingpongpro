@@ -52,6 +52,7 @@ struct AppOptions
 	CharString output;
 	bool plot;
 	TInputFiles transposonFiles;
+	bool predictTransposons;
 	unsigned int verbosity;
 };
 
@@ -189,6 +190,9 @@ typedef list< TTransposon > TTransposonsPerContig;
 // type to store all transposons of the entire genome
 typedef map< unsigned int, TTransposonsPerContig > TTransposonsPerGenome;
 
+#define PREDICT_TRANSPOSONS_SLIDING_WINDOW 1000
+#define PREDICT_TRANSPOSONS_LENGTH 30
+
 // ==========================================================================
 // Functions
 // ==========================================================================
@@ -231,8 +235,10 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 
 	addOption(parser, ArgParseOption("p", "plot", "Generate R plots on background noise estimation. Requires Rscript. Default: off."));
 
-	addOption(parser, ArgParseOption("t", "transposons", "Check if the transposons given in the file are suppressed through ping-pong activity. \"-\" means stdin.", ArgParseArgument::INPUTFILE, "PATH", true));
+	addOption(parser, ArgParseOption("t", "transposons", "Check if the transposons given in the file are suppressed through ping-pong activity.", ArgParseArgument::INPUTFILE, "PATH", true));
 	setValidValues(parser, "transposons", ".bed .csv .gff .gtf .tsv");
+
+	addOption(parser, ArgParseOption("T", "predict-transposons", "Predict the location of suppressed transposons based on regions with high ping-pong activity. Default: off."));
 
 	addOption(parser, ArgParseOption("v", "verbose", "Print messages to stderr about the current progress. Default: off."));
 
@@ -286,6 +292,7 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	options.transposonFiles.resize(getOptionValueCount(parser, "transposons")); // store input files in vector
 	for (vector< string >::size_type i = 0; i < options.transposonFiles.size(); i++)
 		getOptionValue(options.transposonFiles[i], parser, "transposons", i);
+	options.predictTransposons = isSet(parser, "predict-transposons");
 	if (isSet(parser, "verbose"))
 	{
 		options.verbosity = 3;
@@ -870,7 +877,9 @@ void readTransposonsFromFile(ifstream &transposonFile, TFileFormat fileFormat, T
 {
 	// the following variables store the numbers of the columns of the respective fields
 	unsigned int identifierField, strandField, contigField, startField, endField;
-	int offset;
+	// some file formats address the first position on the contig with 0, others with 1
+	// some file formats include the last position in regions (half-open), others not (closed)
+	unsigned int offset, halfOpenOrClosed;
 	// character that separates columns
 	char delimiter;
 
@@ -883,6 +892,7 @@ void readTransposonsFromFile(ifstream &transposonFile, TFileFormat fileFormat, T
 			startField = 2;
 			endField = 3;
 			offset = 0;
+			halfOpenOrClosed = 0;
 			delimiter = ' ';
 			break;
 		case fileFormatCSV:
@@ -892,6 +902,7 @@ void readTransposonsFromFile(ifstream &transposonFile, TFileFormat fileFormat, T
 			startField = 4;
 			endField = 5;
 			offset = 1;
+			halfOpenOrClosed = 0;
 			delimiter = ',';
 			break;
 		case fileFormatGFF:
@@ -902,6 +913,7 @@ void readTransposonsFromFile(ifstream &transposonFile, TFileFormat fileFormat, T
 			startField = 4;
 			endField = 5;
 			offset = 1;
+			halfOpenOrClosed = 1;
 			delimiter = '\t';
 			break;
 		case fileFormatTSV:
@@ -912,6 +924,7 @@ void readTransposonsFromFile(ifstream &transposonFile, TFileFormat fileFormat, T
 			startField = 4;
 			endField = 5;
 			offset = 1;
+			halfOpenOrClosed = 0;
 			delimiter = '\t';
 			break;
 	}
@@ -981,7 +994,7 @@ void readTransposonsFromFile(ifstream &transposonFile, TFileFormat fileFormat, T
 					}
 					else
 					{
-						transposonStart -= offset; // some file formats have 0-based coordinates (offset=0), others 1-based (offset=1)
+						transposonStart -= offset; // shift coordinate, in case the file format starts counting at 1 instead of 0
 					}
 				}
 				else if (fieldNumber == endField)
@@ -993,7 +1006,7 @@ void readTransposonsFromFile(ifstream &transposonFile, TFileFormat fileFormat, T
 					}
 					else
 					{
-						transposonEnd -= offset; // some file formats have 0-based coordinates (offset=0), others 1-based (offset=1)
+						transposonEnd = transposonEnd - offset + halfOpenOrClosed; // shift coordinate, in case the file format starts counting at 1 instead of 0 or if the format is closed instead of half open
 					}
 				}
 
@@ -1164,10 +1177,46 @@ void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesB
 	}
 }
 
-void writeTransposonsToFile(TTransposonsPerGenome &transposons, TNameStore &bamNameStore, bool browserTracks)
+// todo: description
+void predictSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesByOverlap, TTransposonsPerGenome &putativeTransposons, const float totalReadCount, TNameStore &bamNameStore)
+{
+	// define a putative transposon around every ping-pong signature
+	for (TPingPongSignaturesPerGenome::iterator contig = pingPongSignaturesByOverlap[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP].begin(); contig != pingPongSignaturesByOverlap[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP].end() && contig->second.size() > 0; ++contig)
+	{
+		unsigned int putativeTransposonStart = contig->second.begin()->position;
+		unsigned int putativeTransposonEnd = putativeTransposonStart + 1;
+		for (TPingPongSignaturesPerContig::iterator pingPongSignature = contig->second.begin(); pingPongSignature != contig->second.end(); ++pingPongSignature)
+		{
+			if (putativeTransposonEnd + PREDICT_TRANSPOSONS_SLIDING_WINDOW >= pingPongSignature->position) // merge close-by windows
+			{
+				putativeTransposonEnd = pingPongSignature->position + 1;
+			}
+			else // the ping-pong signatures are so far apart, that they likely do not belong to the same transposon
+			{
+				if (putativeTransposonStart + PREDICT_TRANSPOSONS_LENGTH <= putativeTransposonEnd) // skip regions that are too short
+				{
+					// name putative transposon after genomic location
+					stringstream putativeTransposonIdentifier;
+					putativeTransposonIdentifier << bamNameStore[contig->first] << ":" << putativeTransposonStart << "-" << putativeTransposonEnd;
+
+					// add transposon to list
+					putativeTransposons[contig->first].push_back(TTransposon(putativeTransposonIdentifier.str(), STRAND_PLUS, putativeTransposonStart, putativeTransposonEnd));
+				}
+
+				// start a new region
+				putativeTransposonStart = pingPongSignature->position;
+				putativeTransposonEnd = putativeTransposonStart + 1;
+			}
+		}
+	}
+	// check putative transposons for ping-pong activity
+	findSuppressedTransposons(pingPongSignaturesByOverlap, putativeTransposons, totalReadCount);
+}
+
+void writeTransposonsToFile(TTransposonsPerGenome &transposons, TNameStore &bamNameStore, bool browserTracks, string fileName)
 {
 	// open files to write transposon data to
-	ofstream transposonsTSV("transposons.tsv", ios_base::out);
+	ofstream transposonsTSV((fileName + ".tsv").c_str(), ios_base::out);
 	if (transposonsTSV.fail())
 	{
 		cerr << "Failed to create TSV file for transposons" << endl;
@@ -1176,7 +1225,7 @@ void writeTransposonsToFile(TTransposonsPerGenome &transposons, TNameStore &bamN
 	ofstream transposonsBED;
 	if (browserTracks)
 	{
-		transposonsBED.open("transposons.bed", ios_base::out);
+		transposonsBED.open((fileName + ".bed").c_str(), ios_base::out);
 		if (transposonsBED.fail())
 		{
 			cerr << "Failed to create browser track file for transposons" << endl;
@@ -1192,7 +1241,11 @@ void writeTransposonsToFile(TTransposonsPerGenome &transposons, TNameStore &bamN
 	// write file headers
 	transposonsTSV << "identifier\tstrand\tcontig\tstart\tend\tpValue\tqValue\tnormalizedSignatureCount" << endl;
 	if (browserTracks)
-		transposonsBED << "track name=\"transposons\" description=\"transposons shaded by ping-pong activity (1000 * (1 - corrected p-value))\" useScore=1 visibility=dense" << endl;
+	{
+		// remove underscores (_) from fileName for the track name
+		stringReplace(fileName, "_", " ");
+		transposonsBED << "track name=\"" << fileName << "\" description=\"" << fileName << " shaded by ping-pong activity (1000 * (1 - corrected p-value))\" useScore=1 visibility=dense" << endl;
+	}
 
 	// write transposon data in TSV/BED format
 	for (TTransposonsPerGenome::iterator contig = transposons.begin(); contig != transposons.end(); ++contig)
@@ -1209,7 +1262,7 @@ void writeTransposonsToFile(TTransposonsPerGenome &transposons, TNameStore &bamN
 		transposonsBED.close();
 }
 
-void generateTransposonsPlot(TTransposonsPerGenome &transposons)
+void generateTransposonsPlot(TTransposonsPerGenome &transposons, const string &fileName)
 {
 	int transposonCount = 0;
 	for (TTransposonsPerGenome::iterator contig = transposons.begin(); contig != transposons.end(); ++contig)
@@ -1230,7 +1283,7 @@ void generateTransposonsPlot(TTransposonsPerGenome &transposons)
 			ss.str("");
 			i++;
 		}
-	plotHistogram("transposon_z-scores", plotTitles, histograms);
+	plotHistogram(fileName, plotTitles, histograms);
 }
 
 // program entry point
@@ -1364,7 +1417,7 @@ int main(int argc, char const ** argv)
 
 	if (options.plot)
 	{
-		stopwatch("Rendering plots for ping-pong signature z-scores", options.verbosity);
+		stopwatch("Rendering plots for z-scores of ping-pong signatures", options.verbosity);
 		generateGroupedStackCountsPlot(groupedStackCountsByOverlap);
 		stopwatch(options.verbosity);
 	}
@@ -1376,18 +1429,36 @@ int main(int argc, char const ** argv)
 
 	if (options.transposonFiles.size() > 0)
 	{
-		stopwatch("Finding suppressed transposons", options.verbosity);
+		stopwatch("Checking input transposons for ping-pong activity", options.verbosity);
 		findSuppressedTransposons(pingPongSignaturesByOverlap, transposons, totalReadCount);
 		stopwatch(options.verbosity);
-		stopwatch("Writing transposons to file", options.verbosity);
-		writeTransposonsToFile(transposons, bamNameStore, options.browserTracks);
+		stopwatch("Writing input transposons to file", options.verbosity);
+		writeTransposonsToFile(transposons, bamNameStore, options.browserTracks, "transposons");
 		stopwatch(options.verbosity);
 		if (options.plot)
 		{
-			stopwatch("Rendering plots for transposon z-scores", options.verbosity);
-			generateTransposonsPlot(transposons);
+			stopwatch("Rendering plots for z-scores of input transposons", options.verbosity);
+			generateTransposonsPlot(transposons, "transposons_z-scores");
 			stopwatch(options.verbosity);
 		}
+	}
+
+	if (options.predictTransposons)
+	{
+		stopwatch("Predicting transposons based on ping-pong activity", options.verbosity);
+		TTransposonsPerGenome putativeTransposons;
+		predictSuppressedTransposons(pingPongSignaturesByOverlap, putativeTransposons, totalReadCount, bamNameStore);
+		stopwatch(options.verbosity);
+		stopwatch("Writing predicted transposons to file", options.verbosity);
+		writeTransposonsToFile(putativeTransposons, bamNameStore, options.browserTracks, "predicted_transposons");
+		stopwatch(options.verbosity);
+		if (options.plot)
+		{
+			stopwatch("Rendering plots for z-scores of predicted transposons", options.verbosity);
+			generateTransposonsPlot(putativeTransposons, "predicted_transposons_z-scores");
+			stopwatch(options.verbosity);
+		}
+
 	}
 
 	return 0;
