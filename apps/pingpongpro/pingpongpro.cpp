@@ -1,7 +1,24 @@
 // ==========================================================================
 //				pingpongpro
 // ==========================================================================
-// todo: copyright
+/*
+
+Copyright (c) 2014, Sebastian Uhrig
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+*/
 
 #include <seqan/basic.h>
 #include <seqan/sequence.h>
@@ -254,14 +271,14 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 
 	addOption(parser, ArgParseOption("o", "output", "Write output to specified directory. Default: current working directory.", ArgParseArgument::OUTPUTFILE, "PATH", true));
 
-	addOption(parser, ArgParseOption("p", "plot", "Generate R plots on background noise estimation. Requires Rscript. Default: off."));
+	addOption(parser, ArgParseOption("p", "plot", "Generate R plots on background noise estimation. Requires Rscript. Default: \\fIoff\\fP."));
 
 	addOption(parser, ArgParseOption("t", "transposons", "Check if the transposons given in the file are suppressed through ping-pong activity.", ArgParseArgument::INPUTFILE, "PATH", true));
 	setValidValues(parser, "transposons", ".bed .csv .gff .gtf .tsv");
 
-	addOption(parser, ArgParseOption("T", "predict-transposons", "Predict the location of suppressed transposons based on regions with high ping-pong activity. Default: off."));
+	addOption(parser, ArgParseOption("T", "predict-transposons", "Predict the location of suppressed transposons based on regions with high ping-pong activity. Default: \\fIoff\\fP."));
 
-	addOption(parser, ArgParseOption("v", "verbose", "Print messages to stderr about the current progress. Default: off."));
+	addOption(parser, ArgParseOption("v", "verbose", "Print messages to stderr about the current progress. Default: \\fIoff\\fP."));
 
 	// parse command line
 	ArgumentParser::ParseResult parserResult = parse(parser, argc, argv);
