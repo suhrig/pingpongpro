@@ -278,7 +278,7 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 
 	addOption(parser, ArgParseOption("T", "predict-transposons", "Predict the location of suppressed transposons based on regions with high ping-pong activity. Default: \\fIoff\\fP."));
 
-	addOption(parser, ArgParseOption("v", "verbose", "Print messages to stderr about the current progress. Default: \\fIoff\\fP."));
+	addOption(parser, ArgParseOption("v", "verbose", "Print messages about the current progress to stderr. Default: \\fIoff\\fP."));
 
 	// parse command line
 	ArgumentParser::ParseResult parserResult = parse(parser, argc, argv);
