@@ -193,6 +193,9 @@ typedef map< unsigned int, TTransposonsPerContig > TTransposonsPerGenome;
 #define PREDICT_TRANSPOSONS_SLIDING_WINDOW 1000
 #define PREDICT_TRANSPOSONS_LENGTH 30
 
+#define APPROXIMATION_ACCURACY 0.01
+#define APPROXIMATION_RANGE 5
+
 // ==========================================================================
 // Functions
 // ==========================================================================
@@ -645,18 +648,17 @@ void calculateFDRs(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TP
 					// calculate expected number of false positives among the putative ping-pong signatures
 					for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
 					{
-						const double approximationAccuracy = 0.01;
-						const double approximationRange = 5;
 						double fdr = 0;
-						for (double x = -approximationRange; x <= +approximationRange; x += approximationAccuracy)
+						double degreesOfFreedom = MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP;
+						for (double x = -APPROXIMATION_RANGE; x <= +APPROXIMATION_RANGE; x += APPROXIMATION_ACCURACY)
 						{
 							if (x >= (groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][i][j][k][l] - meanOfArbitraryOverlaps) / stdDevOfArbitraryOverlaps)
 							{
-								fdr += approximationAccuracy * 1/sqrt(2*M_PI)*exp(-0.5*x*x) * 1;
+								fdr += APPROXIMATION_ACCURACY * tgamma((degreesOfFreedom+1)/2) / sqrt(degreesOfFreedom * M_PI) / tgamma(degreesOfFreedom/2) * pow(1 + x * x / degreesOfFreedom, -(degreesOfFreedom + 1)/2) * 1;
 							}
 							else
 							{
-								fdr += approximationAccuracy * 1/sqrt(2*M_PI)*exp(-0.5*x*x) * (x * stdDevOfArbitraryOverlaps + meanOfArbitraryOverlaps) / groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][i][j][k][l];
+								fdr += APPROXIMATION_ACCURACY * tgamma((degreesOfFreedom+1)/2) / sqrt(degreesOfFreedom * M_PI) / tgamma(degreesOfFreedom/2) * pow(1 + x * x / degreesOfFreedom, -(degreesOfFreedom + 1)/2) * (x * stdDevOfArbitraryOverlaps + meanOfArbitraryOverlaps) / groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][i][j][k][l];
 							}
 						}
 
@@ -1128,12 +1130,11 @@ void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesB
 					stdDevOfArbitraryOverlaps = 1E-10; // prevent division by 0, in case the STDDEV is 0
 
 				// calculate significance of transposon score of ping-pong overlap vs. arbitrary overlaps
-				const double approximationAccuracy = 0.01;
-				const double approximationRange = 5;
 				double zValue = (transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] - meanOfArbitraryOverlaps) / stdDevOfArbitraryOverlaps;
 				double pValue = 0;
-				for (double x = zValue; x <= zValue + approximationRange; x += approximationAccuracy)
-					pValue += approximationAccuracy * 1/sqrt(2*M_PI)*exp(-0.5*x*x);
+				double degreesOfFreedom = MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP;
+				for (double x = zValue; x <= zValue + APPROXIMATION_RANGE; x += APPROXIMATION_ACCURACY)
+					pValue += APPROXIMATION_ACCURACY * tgamma((degreesOfFreedom+1)/2) / sqrt(degreesOfFreedom * M_PI) / tgamma(degreesOfFreedom/2) * pow(1 + x * x / degreesOfFreedom, -(degreesOfFreedom + 1)/2);
 
 				transposon->pValue = pValue;
 				// the normalized signature count is the number of ping-pong signatures per kilobase per million mapped reads
