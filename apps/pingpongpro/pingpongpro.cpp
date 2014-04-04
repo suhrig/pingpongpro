@@ -231,7 +231,7 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	setDate(parser, "Mar 2014");
 
 	// define parameters
-	addOption(parser, ArgParseOption("b", "browserTracks", "Generate genome browser tracks for loci with ping-pong signature and (if -t is specified) for transposons with ping-pong activity. Default: off."));
+	addOption(parser, ArgParseOption("b", "browserTracks", "Generate genome browser tracks for loci with ping-pong signature and (if -t is specified) for transposons with ping-pong activity. Default: \\fIoff\\fP."));
 
 	addOption(parser, ArgParseOption("s", "min-stack-height", "Omit stacks with fewer than the specified number of reads from the output.", ArgParseArgument::INTEGER, "NUMBER_OF_READS", true));
 	setDefaultValue(parser, "min-stack-height", 0);
