@@ -244,8 +244,8 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	addUsageLine(parser, "[\\fIOPTIONS\\fP] [-i \\fISAM_INPUT_FILE\\fP [-i ...]] [-o \\fIOUTPUT_DIRECTORY\\fP]");
 	setShortDescription(parser, "Find ping-pong signatures like a pro");
 	addDescription(parser, "PingPongPro scans piRNA-Seq data for signs of ping-pong cycle activity. The ping-pong cycle produces piRNA molecules with complementary 5'-ends. These molecules appear as stacks of aligned reads whose 5'-ends overlap with the 5'-ends of reads on the opposite strand by exactly 10 bases.");
-	setVersion(parser, "0.1");
-	setDate(parser, "Mar 2014");
+	setVersion(parser, "1.0");
+	setDate(parser, "Apr 2014");
 
 	// define parameters
 	addOption(parser, ArgParseOption("b", "browserTracks", "Generate genome browser tracks for loci with ping-pong signature and (if -t is specified) for transposons with ping-pong activity. Default: \\fIoff\\fP."));
