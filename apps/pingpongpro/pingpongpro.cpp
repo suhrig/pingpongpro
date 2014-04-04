@@ -34,10 +34,13 @@ using namespace seqan;
 // type to hold the list of input files given as arguments to the program
 typedef vector<CharString> TInputFiles;
 
-// todo: description
+// options how to handle multi-mapped reads for calculation of read stack heights
+// multiHitsWeighted = multi-hits are counted as 1 / number of hits
+// multiHitsDiscard = multi-hits are counted as 0
+// multiHitsUnique = multi-hits are counted as 1 (i.e., no distinction is made between unique hits and multi-hits)
 enum TCountMultiHits { multiHitsWeighted, multiHitsDiscard, multiHitsUnique };
 
-// todo: description
+// constants for various output and input file formats
 enum TFileFormat { fileFormatBED, fileFormatCSV, fileFormatGFF, fileFormatGTF, fileFormatTSV };
 
 // struct to store the options from the command line
@@ -64,14 +67,14 @@ typedef Iterator<TNameStore>::Type TNameStoreIterator;
 const unsigned int STRAND_PLUS = 0;
 const unsigned int STRAND_MINUS = 1;
 
-// for every locus (position) on the genome the following attributes are calculated:
+// for every position on the genome the following attributes are calculated:
 //  - reads: the number of reads which begin at this position
-//  - UAt5PrimeEnd: whether the reads of the stack have a U at the 5' end
-struct TCountsPosition
+//  - UAt5PrimeEnd: whether the reads of the stack have uridine at the 5' end
+struct TReadStack
 {
 	float reads;
 	bool UAt5PrimeEnd;
-	TCountsPosition():
+	TReadStack():
 		reads(0),
 		UAt5PrimeEnd(false)
 	{}
@@ -79,9 +82,9 @@ struct TCountsPosition
 
 // The following types define nested arrays to store the above stats for every position in the genome.
 // The stats are grouped by strand and contig/chromosome.
-typedef map< unsigned int, TCountsPosition > TCountsContig;
-typedef map< unsigned int, TCountsContig > TCountsStrand;
-typedef TCountsStrand TCountsGenome[2];
+typedef map< unsigned int, TReadStack > TReadStacksPerContig;
+typedef map< unsigned int, TReadStacksPerContig > TReadStacksPerStrand;
+typedef TReadStacksPerStrand TReadStacksPerGenome[2];
 
 // true ping-pong stacks overlap by this many nt
 #define PING_PONG_OVERLAP 10
@@ -94,16 +97,9 @@ typedef TCountsStrand TCountsGenome[2];
 // type to store a score for each stack height found in the input file
 typedef map< unsigned int, float > THeightScoreMap;
 
-// todo: description
-#define IS_URIDINE 0
-#define IS_NOT_URIDINE 1
-#define IS_ABOVE_COVERAGE 0
-#define IS_BELOW_COVERAGE 1
-#define HEIGHT_SCORE_BINS 1000
-typedef vector< vector< vector< vector< float > > > > TGroupedStackCounts;
-typedef vector< TGroupedStackCounts > TGroupedStackCountsByOverlap;
-
-// todo: description
+// a ping-pong signature is defined as two stacks of reads, which are on opposite strands
+// and overlap by 10 nt at their 5' ends
+// the following type stores various attributes for every found signature
 struct TPingPongSignature
 {
 	unsigned int position: 32; // position on contig where the ping-pong overlap is located
@@ -141,21 +137,33 @@ typedef map< unsigned int, TPingPongSignaturesPerContig > TPingPongSignaturesPer
 // type to store all ping-pong signatures with a certain overlap (including overlaps other than 10 nt, i.e., no real ping-pong signatures)
 typedef vector< TPingPongSignaturesPerGenome > TPingPongSignaturesByOverlap;
 
-// types to draw a histogram
-typedef vector< float > THistogram;
-typedef vector< THistogram > THistograms;
+// ping-pong signatures are grouped and counted by the following criteria
+// - the height of the overlapping stacks
+// - whether the reads start with uridine
+// - whether the height of the stacks are above or below the local coverage
+#define IS_URIDINE 0 // bin for signatures with uridine at the 5' end
+#define IS_NOT_URIDINE 1 // bin for signatures with another base than uridine at the 5' end
+#define IS_ABOVE_COVERAGE 0 // bin for signatures with stacks that are higher than the local coverage
+#define IS_BELOW_COVERAGE 1 // bin for signatures with stacks that are lower than the local coverage
+#define HEIGHT_SCORE_BINS 1000 // divide signatures by height into this many bins
+typedef vector< vector< vector< vector< float > > > > TGroupedStackCounts;
+typedef vector< TGroupedStackCounts > TGroupedStackCountsByOverlap;
 
-// type to store the region of a single transposon
+// types to plot histograms
+typedef vector< float > THistogram; // every vector element represents the height of a bar
+typedef vector< THistogram > THistograms; // a collection of histograms, which are printed into a single PDF
+
+// type to store attributes about transposons
 struct TTransposon
 {
-	string identifier;
+	string identifier; // name of the transposon
 	unsigned int strand;
 	unsigned int start;
 	unsigned int end;
-	float pValue;
-	float qValue;
-	float normalizedSignatureCount;
-	THistogram histogram;
+	float pValue; // probability that there is ping-pong activity in the region of the transposon
+	float qValue; // multiple-testing corrected <pValue>
+	float normalizedSignatureCount; // number of ping-pong signatures found in the region of the transposon, normalized by transposon length and number of input reads
+	THistogram histogram; // absolute (non-normalized) number of ping-pong signatures within the transposon region for every overlap between <MIN_ARBITRARY_OVERLAP> and <MAX_ARBITRARY_OVERLAP>
 
 	// constructor to initialize with values
 	TTransposon(string identifier, unsigned int strand, unsigned int start, unsigned int end):
@@ -163,7 +171,7 @@ struct TTransposon
 	{
 	}
 
-	// copy constructor (needed to add instance to a STL list
+	// copy constructor (needed to add instance to a STL list)
 	TTransposon(const TTransposon &transposon)
 	{
 		identifier = transposon.identifier;
@@ -176,7 +184,7 @@ struct TTransposon
 		histogram = transposon.histogram;
 	}
 
-	// needed for sorting of the list by genomic position
+	// operator for sorting of a list of transposons by genomic position
 	inline bool operator<(const TTransposon &transposon)
 	{
 		if (start == transposon.start)
@@ -190,17 +198,27 @@ typedef list< TTransposon > TTransposonsPerContig;
 // type to store all transposons of the entire genome
 typedef map< unsigned int, TTransposonsPerContig > TTransposonsPerGenome;
 
-#define PREDICT_TRANSPOSONS_SLIDING_WINDOW 1000
-#define PREDICT_TRANSPOSONS_LENGTH 30
+// parameters for transposon prediction based on ping-pong activity
+#define PREDICT_TRANSPOSONS_SLIDING_WINDOW 1000 // ping-pong signatures within this window are considered to belong to the same transposon
+#define PREDICT_TRANSPOSONS_LENGTH 30 // predicted transposons shorter than this are discarded
 
-#define APPROXIMATION_ACCURACY 0.01
-#define APPROXIMATION_RANGE 5
+// the calculation of p-values is based on integrals
+// the following constants are parameters for the precision of p-values calculation
+#define APPROXIMATION_ACCURACY 0.01 // step size with which integrals are calculated; smaller means more accurate
+#define APPROXIMATION_RANGE 5 // span of integral calculation; wider means more accurate
+#define MIN_STANDARD_DEVIATION 1E-10 // if the STDDEV is smaller than this, assume this fixed value to avoid division by 0
 
 // ==========================================================================
 // Functions
 // ==========================================================================
 
 // function to parse command-line arguments
+// Input parameters:
+//	argc: number of command-line arguments as passed to the function <main>
+//	argv: array of command-line arguments as passed to the function <main>
+// Output parameters:
+//	options: parsed options
+// Return value: status code about whether the command-line could be parsed
 ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char const ** argv)
 {
 	ArgumentParser parser("pingpongpro");
@@ -208,11 +226,11 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	// define usage and description
 	addUsageLine(parser, "[\\fIOPTIONS\\fP] [-i \\fISAM_INPUT_FILE\\fP [-i ...]] [-o \\fIOUTPUT_DIRECTORY\\fP]");
 	setShortDescription(parser, "Find ping-pong signatures like a pro");
-	// todo: define long description
 	addDescription(parser, "PingPongPro scans piRNA-Seq data for signs of ping-pong cycle activity. The ping-pong cycle produces piRNA molecules with complementary 5'-ends. These molecules appear as stacks of aligned reads whose 5'-ends overlap with the 5'-ends of reads on the opposite strand by exactly 10 bases.");
 	setVersion(parser, "0.1");
 	setDate(parser, "Mar 2014");
 
+	// define parameters
 	addOption(parser, ArgParseOption("b", "browserTracks", "Generate genome browser tracks for loci with ping-pong signature and (if -t is specified) for transposons with ping-pong activity. Default: off."));
 
 	addOption(parser, ArgParseOption("s", "min-stack-height", "Omit stacks with fewer than the specified number of reads from the output.", ArgParseArgument::INTEGER, "NUMBER_OF_READS", true));
@@ -308,7 +326,12 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	return parserResult;
 }
 
-// function to measure time between the first and second invocation of the function
+// Function to measure time between the first and second invocation of the function.
+// Input parameters:
+//	operation: a description of the task being measured
+//	verbosity: if <operation> is not empty, the description is printed to stderr, if the verbosity level is >= INFO
+//	           if <operation is empty, the function prints the number of seconds since its last invocation
+// Return value: the number of seconds since the last invocation of the function
 unsigned int stopwatch(const string &operation, unsigned int verbosity)
 {
 	static time_t start = 0;
@@ -337,15 +360,19 @@ unsigned int stopwatch(unsigned int verbosity)
 	return stopwatch("", verbosity);
 }
 
-// Function which sums up the number of reads that start at a given position in the genome.
-// Additionally, it counts the number of reads with uridine at the 5' end.
-// Parameters:
-//   bamFile: the BAM/SAM file from where to load the reads
-//   readCounts: stats for positions were reads on the minus strand overlap the 5' ends of reads on the plus strand
-// todo: document parameters
-int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCounts, const unsigned int minAlignmentLength, const unsigned int maxAlignmentLength, TCountMultiHits countMultiHits, float &totalReadCount)
+// Function which finds stacks of reads in a BAM file.
+// Input parameters:
+//	bamFile: the BAM/SAM file from where to load the reads
+//	minAlignmentLength: reads in the <bamFile> which are shorter than this are ignored
+//	maxAlignmentLength: reads in the <bamFile> which are longer than this are ignored
+//	countMultiHits: how to count multi-mapped reads (see declaration of TCountMultiHits)
+// Output parameters:
+//	readStacks: stacks of reads that were found by the function
+//	totalReadCount: the number of reads in the <bamFile> that were not ignored (may be fractional depending on the value of <countMultiHits>)
+// Return value: 1, if the <bamFile> could not be read; 0 otherwise
+int countReadsInBamFile(BamStream &bamFile, TReadStacksPerGenome &readStacks, const unsigned int minAlignmentLength, const unsigned int maxAlignmentLength, TCountMultiHits countMultiHits, float &totalReadCount)
 {
-	TCountsPosition *position;
+	TReadStack *position;
 
 	BamAlignmentRecord record;
 	while (!atEnd(bamFile))
@@ -405,7 +432,7 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCounts, const uns
 			if (hasFlagRC(record)) // read maps to minus strand
 			{
 				// get a pointer to counter of the position of the read
-				position = &(readCounts[STRAND_MINUS][record.rID][record.beginPos+alignmentLength]);
+				position = &(readStacks[STRAND_MINUS][record.rID][record.beginPos+alignmentLength]);
 
 				// check if base at 5' end is uridine
 				size_t clippedBasesAt5PrimeEnd = 0;
@@ -417,7 +444,7 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCounts, const uns
 			else // read maps to plus strand
 			{
 				// get a pointer to counter of the position of the read
-				position = &(readCounts[STRAND_PLUS][record.rID][record.beginPos]);
+				position = &(readStacks[STRAND_PLUS][record.rID][record.beginPos]);
 
 				// check if base at 5' end is uridine
 				size_t clippedBasesAt5PrimeEnd = 0;
@@ -438,19 +465,36 @@ int countReadsInBamFile(BamStream &bamFile, TCountsGenome &readCounts, const uns
 	return 0;
 }
 
-// convert stack heights to scores
-// todo: document parameters
-void mapHeightsToScores(TCountsGenome &readCounts, THeightScoreMap &heightScoreMap)
+// Function, which converts every stack height into a score.
+// The score is directly based on how often a stack with a certain height is found in the input files of the program.
+// Therefore, the score maps every stack height to the empirical frequency of encountering such a stack in the input dataset.
+// Input parameters:
+//	readStacks: the read stacks that were found by the function <countReadsInBamFile>
+// Output parameters:
+//	heightScoreMap: output of the function
+//	                a mapping of [stack height -> empirical frequency of stacks with this height]
+void mapHeightsToScores(TReadStacksPerGenome &readStacks, THeightScoreMap &heightScoreMap)
 {
 	// iterate through all strands, contigs and positions to count how many stacks there are of any given height
 	for (unsigned int strand = STRAND_PLUS; strand <= STRAND_MINUS; ++strand)
-		for (TCountsStrand::iterator contig = readCounts[strand].begin(); contig != readCounts[strand].end(); ++contig)
-			for (TCountsContig::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
+		for (TReadStacksPerStrand::iterator contig = readStacks[strand].begin(); contig != readStacks[strand].end(); ++contig)
+			for (TReadStacksPerContig::iterator position = contig->second.begin(); position != contig->second.end(); ++position)
 				heightScoreMap[0.5 + position->second.reads] += 1;
 }
 
-// todo: description
-void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreMap, TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPingPongSignaturesByOverlap &pingPongSignaturesByOverlap)
+// Function, which groups read stacks by all possible combinations of the following criteria:
+// - the height of the overlapping stacks
+// - whether the reads start with uridine
+// - whether the height of the stacks are above or below the local coverage
+// For every group, the number of stacks falling into that particular group is counted.
+// Input parameters:
+//	readStacks: the read stacks that were found by the function <countReadsInBamFile>
+//	            the variable is emptied by the function to conserve memory
+//	heightScoreMap: a mapping of [stack height -> empirical frequency of stacks with this height] as produced by the function <mapHeightsToScores>
+// Output parameters:
+//	groupedStackCountsByOverlap: for every overlap between <MIN_ARBITRARY_OVERLAP> and <MAX_ARBITRARY_OVERLAP>, the number of read stacks falling into all possible groups
+//	pingPongSignaturesByOverlap: for every overlap between <MIN_ARBITRARY_OVERLAP> and <MAX_ARBITRARY_OVERLAP>, the ping-pong signatures that were found
+void countStacksByGroup(TReadStacksPerGenome &readStacks, THeightScoreMap &heightScoreMap, TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPingPongSignaturesByOverlap &pingPongSignaturesByOverlap)
 {
 	// the following loop initializes a multi-dimensional array of stack counts with the following boundaries:
 	// MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP + 1 (one for each possible overlap)
@@ -484,19 +528,19 @@ void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreM
 	maxHeightScore = log10(maxHeightScore * maxHeightScore);
 
 	// iterate through all strands, contigs and positions to find those positions where a stack on the plus strand overlaps a stack on the minus strand by <overlap> nt
-	for (TCountsStrand::iterator contigPlusStrand = readCounts[STRAND_PLUS].begin(); contigPlusStrand != readCounts[STRAND_PLUS].end(); ++contigPlusStrand)
+	for (TReadStacksPerStrand::iterator contigPlusStrand = readStacks[STRAND_PLUS].begin(); contigPlusStrand != readStacks[STRAND_PLUS].end(); ++contigPlusStrand)
 	{
-		TCountsStrand::iterator contigMinusStrand = readCounts[STRAND_MINUS].find(contigPlusStrand->first);
-		if (contigMinusStrand != readCounts[STRAND_MINUS].end())
+		TReadStacksPerStrand::iterator contigMinusStrand = readStacks[STRAND_MINUS].find(contigPlusStrand->first);
+		if (contigMinusStrand != readStacks[STRAND_MINUS].end())
 		{
-			for (TCountsContig::iterator positionPlusStrand = contigPlusStrand->second.begin(); positionPlusStrand != contigPlusStrand->second.end(); ++positionPlusStrand)
+			for (TReadStacksPerContig::iterator positionPlusStrand = contigPlusStrand->second.begin(); positionPlusStrand != contigPlusStrand->second.end(); ++positionPlusStrand)
 			{
-				vector< TCountsContig::iterator > stacksOnMinusStrand(MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP + 1, contigMinusStrand->second.end());
+				vector< TReadStacksPerContig::iterator > stacksOnMinusStrand(MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP + 1, contigMinusStrand->second.end());
 				float meanStackHeightInVicinity = 0;
 				float maxStackHeightInVicinity = 0;
 				for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
 				{
-					TCountsContig::iterator positionMinusStrand = contigMinusStrand->second.find(positionPlusStrand->first + overlap);
+					TReadStacksPerContig::iterator positionMinusStrand = contigMinusStrand->second.find(positionPlusStrand->first + overlap);
 					if (positionMinusStrand != contigMinusStrand->second.end())
 					{
 						// calculate mean of stack heights in the vicinity
@@ -554,11 +598,15 @@ void countStacksByGroup(TCountsGenome &readCounts, THeightScoreMap &heightScoreM
 	}
 
 	// free the rest of memory that might potentially not have been freed yet
-	for (TCountsStrand::iterator contigMinusStrand = readCounts[STRAND_MINUS].begin(); contigMinusStrand != readCounts[STRAND_MINUS].end(); ++contigMinusStrand)
+	for (TReadStacksPerStrand::iterator contigMinusStrand = readStacks[STRAND_MINUS].begin(); contigMinusStrand != readStacks[STRAND_MINUS].end(); ++contigMinusStrand)
 		contigMinusStrand->second.clear();
 }
 
-//todo: description
+// The groups of stacks as produced by the function <countStacksByGroup> may be empty.
+// This function merges adjacent groups until there are no empty groups left.
+// Input/output parameters:
+// 	groupedStackCountsByOverlap: the grouped stack counts as produced by the function <countStacksByGroup>
+//	pingPongSignaturesByOverlap: the ping-pong signatures found by the function <countStacksByGroup>
 void collapseBins(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPingPongSignaturesByOverlap &pingPongSignaturesByOverlap)
 {
 	// create a new container to hold the collapsed bin counts
@@ -618,7 +666,13 @@ void collapseBins(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPi
 	groupedStackCountsByOverlap = collapsed;
 }
 
-//todo: description
+// This function assigns a FDR to every ping-pong stacks based on how often ping-pong stacks
+// with the properties of a given ping-pong stack occur by chance compared to how often they occur
+// when looking at overlaps of 10 nt.
+// Input paramters:
+// 	groupedStackCountsByOverlap: the collapsed grouped stack counts as modified by the function <collapseBins>
+// Input/output parameters:
+//	pingPongSignaturesByOverlap: the ping-pong signatures as modified by the function <collapseBins>
 void calculateFDRs(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPingPongSignaturesByOverlap &pingPongSignaturesByOverlap)
 {
 	TGroupedStackCountsByOverlap FDRs = groupedStackCountsByOverlap; // the assignment shall only ensure that <FDRs> has the same dimensions as <groupedStackCountsByOverlap>
@@ -642,8 +696,8 @@ void calculateFDRs(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TP
 						if (overlap != PING_PONG_OVERLAP) // ignore ping-pong stacks, since they would skew the result
 							stdDevOfArbitraryOverlaps += pow(groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][i][j][k][l] - meanOfArbitraryOverlaps, 2);
 					stdDevOfArbitraryOverlaps = sqrt(1.0 / (groupedStackCountsByOverlap.size() - 1 - 1 /* minus 1 for corrected sample STDDEV */) * stdDevOfArbitraryOverlaps);
-					if (stdDevOfArbitraryOverlaps <= 1E-10)
-						stdDevOfArbitraryOverlaps = 1E-10; // prevent division by 0, in case the STDDEV is 0
+					if (stdDevOfArbitraryOverlaps <= MIN_STANDARD_DEVIATION)
+						stdDevOfArbitraryOverlaps = MIN_STANDARD_DEVIATION; // prevent division by 0, in case the STDDEV is 0
 
 					// calculate expected number of false positives among the putative ping-pong signatures
 					for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
@@ -682,6 +736,12 @@ void calculateFDRs(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TP
 				pingPongSignature->fdr = FDRs[overlap - MIN_ARBITRARY_OVERLAP][pingPongSignature->heightScoreBin][pingPongSignature->UAt5PrimeEndOnPlusStrandBin][pingPongSignature->UAt5PrimeEndOnMinusStrandBin][pingPongSignature->localHeightScoreBin];
 }
 
+// function to replace all occurrences of a string within a string for another string
+// Input/output paramters:
+//	subjectString: the string to modify
+// Input parameters:
+//	searchString: the string to search for
+//	replaceString: the string that replaces <searchString>
 void stringReplace(string &subjectString, const string &searchString, const string &replaceString) {
 	size_t i = 0;
 	while((i = subjectString.find(searchString, i)) != string::npos)
@@ -691,7 +751,12 @@ void stringReplace(string &subjectString, const string &searchString, const stri
 	}
 }
 
-// todo: description
+// This function uses Rscript to generate histogram plots.
+// Multiple plots are written to a single PDF.
+// Input parameters:
+//	fileName: the name of the R script and PDF file to be generated, without the file extension
+//	titles: the titles of all histogram plots
+//	histograms: a collection of histograms to plot
 void plotHistogram(const string &fileName, const vector< string > &titles, const THistograms &histograms)
 {
 	// generate an R script that produces a histogram plot
@@ -743,7 +808,7 @@ void plotHistogram(const string &fileName, const vector< string > &titles, const
 	 	<< "# convert absolute values to z-scores" << endl
 		<< "means <- apply(histograms[,!colnames(histograms) %in% c('plotTitle', 'overlap_" << PING_PONG_OVERLAP << "')], 1, mean)" << endl
 		<< "sds <- apply(histograms[,!colnames(histograms) %in% c('plotTitle', 'overlap_" << PING_PONG_OVERLAP << "')], 1, sd)" << endl
-		<< "sds <- ifelse(sds < 1e-10, 1e-10, sds)" << endl
+		<< "sds <- ifelse(sds < " << MIN_STANDARD_DEVIATION << "," << MIN_STANDARD_DEVIATION << ", sds)" << endl
 		<< "for (column in colnames(histograms[,colnames(histograms) != 'plotTitle'])) {" << endl
 		<< "	histograms[,column] = (histograms[,column] - means) / sds" << endl
 		<< "}" << endl
@@ -772,7 +837,12 @@ void plotHistogram(const string &fileName, const vector< string > &titles, const
 	system(toCString(RCommand));
 }
 
-// todo: document parameters
+// function to write ping-pong signatures found by the function <countStacksByGroup> to a TSV file
+// Input parameters:
+//	pingPongSignaturesPerGenome: the ping-pong signatures to write to a file as found by the function <countStacksByGroup>
+//	bamNameStore: mapping of numeric contig IDs to human-readable names
+//	minStackHeight: ping-pong signatures with a smaller stack height than this are omitted from the output
+//	browserTracks: if set to true, then a bedGraph file is generated in addition to the TSV file
 void writePingPongSignaturesToFile(TPingPongSignaturesPerGenome &pingPongSignaturesPerGenome, const TNameStore &bamNameStore, unsigned int minStackHeight, bool browserTracks)
 {
 	// open files to write ping-pong signatures to
@@ -834,8 +904,13 @@ void writePingPongSignaturesToFile(TPingPongSignaturesPerGenome &pingPongSignatu
 	}
 }
 
+// generate plots that illustrate the difference in stack counts by overlap
+// Input parameters:
+//	groupedStackCountsByOverlap: grouped stack counts as processed by the function <collapseBins>
 void generateGroupedStackCountsPlot(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap)
 {
+	// find out in how many bins the stacks were grouped,
+	// because we need to generate a histogram for every bin
 	int binCount =
 		groupedStackCountsByOverlap.begin()->size() *
 		groupedStackCountsByOverlap.begin()->begin()->size() *
@@ -844,6 +919,7 @@ void generateGroupedStackCountsPlot(TGroupedStackCountsByOverlap &groupedStackCo
 	THistograms histograms(binCount);
 	vector< string > plotTitles(binCount);
 
+	// collect histogram values and generate plot names
 	unsigned int x = 0;
 	stringstream ss;
 	for (int i = groupedStackCountsByOverlap.begin()->size() - 1; i >= 0; i--)
@@ -872,10 +948,22 @@ void generateGroupedStackCountsPlot(TGroupedStackCountsByOverlap &groupedStackCo
 					}
 					x++;
 				}
+
+	// render histograms
 	plotHistogram("ping-pong_signature_z-scores", plotTitles, histograms);
 }
 
-void readTransposonsFromFile(ifstream &transposonFile, TFileFormat fileFormat, TTransposonsPerGenome &transposons, TNameStore &nameStore)
+// this functions reads genomic regions of transposons from a file
+// the transposons are checked for ping-pong activity by the function <findSuppressedTransposons>
+// Input parameters:
+//	transposonFile: the file from where to read the transposons
+//	fileFormat: the format of the file
+// Input/output parameters:
+//	bamNameStore: a mapping of numeric contig IDs to human readable names
+//	              the name store is extended by names that it does not contain, but that are used in the transposon file
+// Output parameters:
+//	transposons: the transposons read from the file
+void readTransposonsFromFile(ifstream &transposonFile, TFileFormat fileFormat, TTransposonsPerGenome &transposons, TNameStore &bamNameStore)
 {
 	// the following variables store the numbers of the columns of the respective fields
 	unsigned int identifierField, strandField, contigField, startField, endField;
@@ -931,13 +1019,16 @@ void readTransposonsFromFile(ifstream &transposonFile, TFileFormat fileFormat, T
 			break;
 	}
 
-	unsigned int fieldNumber = 1;
-	string fieldValue = "";
+	unsigned int fieldNumber = 1; // index of the column that is currently being read from the input file
+	string fieldValue = ""; // every column in the input file is first read into this variable
+
+	// when a field has been fully read, it is assigned to one of the following transposon attributes:
 	string transposonIdentifier = "";
 	int transposonStrand = -1;
 	int transposonContig = -1;
 	int transposonStart = -1;
 	int transposonEnd = -1;
+
 	bool newLine = false; // set to true, when a line-feed is read
 	bool quotesOpen = false; // in CSV files, keeps track of opening and closing double-quotes
 
@@ -959,7 +1050,7 @@ void readTransposonsFromFile(ifstream &transposonFile, TFileFormat fileFormat, T
 			character = ' ';
 		}
 
-		if ((character == delimiter) && !((fileFormat == fileFormatCSV) && quotesOpen))
+		if ((character == delimiter) && !((fileFormat == fileFormatCSV) && quotesOpen)) // encountered delimiter character => assign current field to appropriate transposon attribute and then, begin a new field
 		{
 			if (!fieldValue.empty() || newLine)
 			{
@@ -976,15 +1067,15 @@ void readTransposonsFromFile(ifstream &transposonFile, TFileFormat fileFormat, T
 				}
 				else if (fieldNumber == contigField)
 				{
-					for (unsigned int i = 0; (transposonContig == -1) && (i < length(nameStore)); i++)
-						if (nameStore[i] == fieldValue)
+					for (unsigned int i = 0; (transposonContig == -1) && (i < length(bamNameStore)); i++)
+						if (bamNameStore[i] == fieldValue)
 							transposonContig = i;
 
 					if (transposonContig == -1) // the contig was not found in the name store
 					{
 						// add a new element to the name store
-						appendValue(nameStore, fieldValue);
-						transposonContig = length(nameStore) - 1;
+						appendValue(bamNameStore, fieldValue);
+						transposonContig = length(bamNameStore) - 1;
 					}
 				}
 				else if (fieldNumber == startField)
@@ -1058,14 +1149,23 @@ void readTransposonsFromFile(ifstream &transposonFile, TFileFormat fileFormat, T
 
 // Function to sort list of Transposons by p-value for multiple testing correction using Benjamini-Hochberg procedure.
 // The function is used by list::sort to compare which of two TTransposon objects is lower, based on their pValue attribute.
-// Parameters:
+// Input parameters:
 // 	transposon1, transposon2: the transposons to compare
+// Return value: true, if transposon1 has a lower genomic coordinate than transposon2; false otherwise
 inline bool compareTransposonsByPValue(const TTransposonsPerContig::iterator &transposon1, const TTransposonsPerContig::iterator &transposon2)
 {
 	return transposon1->pValue < transposon2->pValue;
 }
 
-// todo: description
+// This function checks given transposons for ping-pong activity.
+// A transposon is assumed to be suppressed by ping-pong activity, if there are significantly more ping-pong signatures within its region
+// than there are arbitrary signatures.
+// Input parameters:
+//	pingPongSignaturesByOverlap: the ping-pong signtures found by function <countStacksByGroup>
+//	totalReadCount: the number of reads read from the input BAM/SAM file; used for normalization of signature counts
+// Input/output parameters
+//	transposons: a list of transposons to check for ping-pong activity
+//	             every transposon is assigned a p-value and a q-value indicating the statistical significance of ping-pong activity
 void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesByOverlap, TTransposonsPerGenome &transposons, const float totalReadCount)
 {
 	// slide over the genome and calculate a z-score for every transposon overlapping the current position
@@ -1126,8 +1226,8 @@ void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesB
 					if (overlap + MIN_ARBITRARY_OVERLAP != PING_PONG_OVERLAP) // ignore ping-pong stacks, since they would skew the result
 						stdDevOfArbitraryOverlaps += pow(transposon->histogram[overlap] - meanOfArbitraryOverlaps, 2);
 				stdDevOfArbitraryOverlaps = sqrt(1.0 / (transposon->histogram.size() - 1 - 1 /* minus 1 for corrected sample STDDEV */) * stdDevOfArbitraryOverlaps);
-				if (stdDevOfArbitraryOverlaps <= 1E-10)
-					stdDevOfArbitraryOverlaps = 1E-10; // prevent division by 0, in case the STDDEV is 0
+				if (stdDevOfArbitraryOverlaps <= MIN_STANDARD_DEVIATION)
+					stdDevOfArbitraryOverlaps = MIN_STANDARD_DEVIATION; // prevent division by 0, in case the STDDEV is 0
 
 				// calculate significance of transposon score of ping-pong overlap vs. arbitrary overlaps
 				double zValue = (transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] - meanOfArbitraryOverlaps) / stdDevOfArbitraryOverlaps;
@@ -1178,7 +1278,15 @@ void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesB
 	}
 }
 
-// todo: description
+// Similar to the function <findSuppressedTransposons>, this function transposons for ping-pong activity.
+// In contrast to <findSuppressedTransposons>, this function does not take transposons as an input argument,
+// but tries to find transposons automatically based on where there is a lot of ping-pong activity.
+// Input parameters:
+//	pingPongSignaturesByOverlap: the ping-pong signtures found by function <countStacksByGroup>
+//	totalReadCount: the number of reads read from the input BAM/SAM file; used for normalization of signature counts
+//      bamNameStore: a mapping of numeric contig IDs to human readable names
+// Output parameters:
+//	putativeTransposons: putative transposons that were found by the function, with p- and q-values
 void predictSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesByOverlap, TTransposonsPerGenome &putativeTransposons, const float totalReadCount, TNameStore &bamNameStore)
 {
 	// define a putative transposon around every ping-pong signature
@@ -1214,6 +1322,12 @@ void predictSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignatur
 	findSuppressedTransposons(pingPongSignaturesByOverlap, putativeTransposons, totalReadCount);
 }
 
+// Function to write transposons to a TSV file.
+// Input paramters:
+//	transposons: the transposons to write to the file
+//      bamNameStore: a mapping of numeric contig IDs to human readable names
+//	browserTracks: if set to true, then a BED file is generated in addition to the TSV file
+//	fileName: the name of the file that the transposons are written to, without the file extension
 void writeTransposonsToFile(TTransposonsPerGenome &transposons, TNameStore &bamNameStore, bool browserTracks, string fileName)
 {
 	// open files to write transposon data to
@@ -1263,6 +1377,10 @@ void writeTransposonsToFile(TTransposonsPerGenome &transposons, TNameStore &bamN
 		transposonsBED.close();
 }
 
+// generate plots that illustrate the statistical significance of ping-pong activity for a list of transposons
+// Input paramters:
+//	transposons: a list of transposons; a plot is generated for each of them
+//	fileName: name of the file that the plots are written to
 void generateTransposonsPlot(TTransposonsPerGenome &transposons, const string &fileName)
 {
 	int transposonCount = 0;
@@ -1295,7 +1413,7 @@ int main(int argc, char const ** argv)
 	if (parseCommandLine(options, argc, argv) != ArgumentParser::PARSE_OK)
 		return 1;
 
-	TCountsGenome readCounts; // stats about positions where reads on the minus strand overlap with the 5' ends of reads on the plus strand
+	TReadStacksPerGenome readStacks; // stats about positions where reads on the minus strand overlap with the 5' ends of reads on the plus strand
 
 	float totalReadCount = 0; // number of reads read from the SAM/BAM file (depending on the command-line arguments, multi-hits may count less than 1)
 
@@ -1317,7 +1435,7 @@ int main(int argc, char const ** argv)
 		}
 
 		// for every position in the genome, count the number of reads that start at a given position
-		if (countReadsInBamFile(bamFile, readCounts, options.minAlignmentLength, options.maxAlignmentLength, options.countMultiHits, totalReadCount) != 0)
+		if (countReadsInBamFile(bamFile, readStacks, options.minAlignmentLength, options.maxAlignmentLength, options.countMultiHits, totalReadCount) != 0)
 			return 1;
 
 		// remember @SQ header lines from BAM file for mapping of contig IDs to human-readable names
@@ -1402,13 +1520,10 @@ int main(int argc, char const ** argv)
 
 	stopwatch("Binning stacks", options.verbosity);
 	THeightScoreMap heightScoreMap;
-	mapHeightsToScores(readCounts, heightScoreMap);
+	mapHeightsToScores(readStacks, heightScoreMap);
 	TGroupedStackCountsByOverlap groupedStackCountsByOverlap;
 	TPingPongSignaturesByOverlap pingPongSignaturesByOverlap;
-	countStacksByGroup(readCounts, heightScoreMap, groupedStackCountsByOverlap, pingPongSignaturesByOverlap);
-	stopwatch(options.verbosity);
-
-	stopwatch("Collapsing bins", options.verbosity);
+	countStacksByGroup(readStacks, heightScoreMap, groupedStackCountsByOverlap, pingPongSignaturesByOverlap);
 	collapseBins(groupedStackCountsByOverlap, pingPongSignaturesByOverlap);
 	stopwatch(options.verbosity);
 
