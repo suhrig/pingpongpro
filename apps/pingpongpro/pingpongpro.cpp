@@ -72,7 +72,7 @@ struct AppOptions
 	CharString output;
 	bool plot;
 	TInputFiles transposonFiles;
-	bool predictTransposons;
+	unsigned int predictTransposonsRange;
 	unsigned int verbosity;
 };
 
@@ -104,12 +104,12 @@ typedef map< unsigned int, TReadStacksPerContig > TReadStacksPerStrand;
 typedef TReadStacksPerStrand TReadStacksPerGenome[2];
 
 // true ping-pong stacks overlap by this many nt
-#define PING_PONG_OVERLAP 10
+const int PING_PONG_OVERLAP = 10;
 
 // stacks with overlaps between MIN_ARBITRARY_OVERLAP and MAX_ARBITRARY_OVERLAP (except for PING_PONG_OVERLAP)
 // are used to estimate what is background noise
-#define MIN_ARBITRARY_OVERLAP 3
-#define MAX_ARBITRARY_OVERLAP 23
+const int MIN_ARBITRARY_OVERLAP = 3;
+const int MAX_ARBITRARY_OVERLAP = 23;
 
 // type to store a score for each stack height found in the input file
 typedef map< unsigned int, float > THeightScoreMap;
@@ -158,11 +158,11 @@ typedef vector< TPingPongSignaturesPerGenome > TPingPongSignaturesByOverlap;
 // - the height of the overlapping stacks
 // - whether the reads start with uridine
 // - whether the height of the stacks are above or below the local coverage
-#define IS_URIDINE 0 // bin for signatures with uridine at the 5' end
-#define IS_NOT_URIDINE 1 // bin for signatures with another base than uridine at the 5' end
-#define IS_ABOVE_COVERAGE 0 // bin for signatures with stacks that are higher than the local coverage
-#define IS_BELOW_COVERAGE 1 // bin for signatures with stacks that are lower than the local coverage
-#define HEIGHT_SCORE_BINS 1000 // divide signatures by height into this many bins
+const unsigned int IS_URIDINE = 0; // bin for signatures with uridine at the 5' end
+const unsigned int IS_NOT_URIDINE = 1; // bin for signatures with another base than uridine at the 5' end
+const unsigned int IS_ABOVE_COVERAGE = 0; // bin for signatures with stacks that are higher than the local coverage
+const unsigned int IS_BELOW_COVERAGE = 1; // bin for signatures with stacks that are lower than the local coverage
+const unsigned int HEIGHT_SCORE_BINS = 1000; // divide signatures by height into this many bins
 typedef vector< vector< vector< vector< float > > > > TGroupedStackCounts;
 typedef vector< TGroupedStackCounts > TGroupedStackCountsByOverlap;
 
@@ -216,14 +216,13 @@ typedef list< TTransposon > TTransposonsPerContig;
 typedef map< unsigned int, TTransposonsPerContig > TTransposonsPerGenome;
 
 // parameters for transposon prediction based on ping-pong activity
-#define PREDICT_TRANSPOSONS_SLIDING_WINDOW 1000 // ping-pong signatures within this window are considered to belong to the same transposon
-#define PREDICT_TRANSPOSONS_LENGTH 30 // predicted transposons shorter than this are discarded
+const unsigned int PREDICT_TRANSPOSONS_MIN_LENGTH = 30; // predicted transposons shorter than this are discarded
 
 // the calculation of p-values is based on integrals
 // the following constants are parameters for the precision of p-values calculation
-#define APPROXIMATION_ACCURACY 0.01 // step size with which integrals are calculated; smaller means more accurate
-#define APPROXIMATION_RANGE 5 // span of integral calculation; wider means more accurate
-#define MIN_STANDARD_DEVIATION 1E-10 // if the STDDEV is smaller than this, assume this fixed value to avoid division by 0
+const double APPROXIMATION_ACCURACY = 0.01; // step size with which integrals are calculated; smaller means more accurate
+const double APPROXIMATION_RANGE = 5; // span of integral calculation; wider means more accurate
+const double MIN_STANDARD_DEVIATION = 1E-10; // if the STDDEV is smaller than this, assume this fixed value to avoid division by 0
 
 // ==========================================================================
 // Functions
@@ -276,7 +275,10 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	addOption(parser, ArgParseOption("t", "transposons", "Check if the transposons given in the file are suppressed through ping-pong activity.", ArgParseArgument::INPUTFILE, "PATH", true));
 	setValidValues(parser, "transposons", ".bed .csv .gff .gtf .tsv");
 
-	addOption(parser, ArgParseOption("T", "predict-transposons", "Predict the location of suppressed transposons based on regions with high ping-pong activity. Default: \\fIoff\\fP."));
+	addOption(parser, ArgParseOption("T", "predict-transposons", "Predict the location of suppressed transposons based on regions with high ping-pong activity. Consider adjacent ping-pong signatures within a range of \\fIRANGE\\fP to belong to the same transposon. Default: \\fIoff\\fP.", ArgParseArgument::INTEGER, "RANGE"));
+	stringstream ss;
+	ss << PREDICT_TRANSPOSONS_MIN_LENGTH;
+	setMinValue(parser, "predict-transposons", ss.str());
 
 	addOption(parser, ArgParseOption("v", "verbose", "Print messages about the current progress to stderr. Default: \\fIoff\\fP."));
 
@@ -287,6 +289,7 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 
 	// extract options, if parsing was successful
 	options.browserTracks = isSet(parser, "browserTracks");
+
 	options.inputFiles.resize(getOptionValueCount(parser, "input")); // store input files in vector
 	if (options.inputFiles.size() == 0)
 	{
@@ -301,6 +304,7 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 				options.inputFiles[i] = "/dev/stdin";
 		}
 	}
+
 	string countMultiHits;
 	getOptionValue(countMultiHits, parser, "multi-hits");
 	if (countMultiHits == "unique")
@@ -315,22 +319,37 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	{
 		options.countMultiHits = multiHitsWeighted;
 	}
+
 	getOptionValue(options.minStackHeight, parser, "min-stack-height");
+
 	getOptionValue(options.minAlignmentLength, parser, "min-alignment-length");
 	getOptionValue(options.maxAlignmentLength, parser, "max-alignment-length");
+
 	if (options.minAlignmentLength > options.maxAlignmentLength)
 	{
 		cerr << getAppName(parser) << ": maximum alignment length (" << options.maxAlignmentLength << ") must not be lower than minimum alignment length (" << options.minAlignmentLength << ")" << endl;
 		return ArgumentParser::PARSE_ERROR;
 	}
+
 	getOptionValue(options.output, parser, "output");
 	if ((length(options.output) > 0) && (options.output[length(options.output)-1] != PATH_delimiter))
 		options.output += PATH_delimiter; // append slash to output path, if missing
+
 	options.plot = isSet(parser, "plot");
+
 	options.transposonFiles.resize(getOptionValueCount(parser, "transposons")); // store input files in vector
 	for (vector< string >::size_type i = 0; i < options.transposonFiles.size(); i++)
 		getOptionValue(options.transposonFiles[i], parser, "transposons", i);
-	options.predictTransposons = isSet(parser, "predict-transposons");
+
+	if (isSet(parser, "predict-transposons"))
+	{
+		getOptionValue(options.predictTransposonsRange, parser, "predict-transposons");
+	}
+	else
+	{
+		options.predictTransposonsRange = 0;
+	}
+
 	if (isSet(parser, "verbose"))
 	{
 		options.verbosity = 3;
@@ -1220,7 +1239,7 @@ void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesB
 			// calculate mean transposon score of all arbitrary overlaps
 			float meanOfArbitraryOverlaps = 0;
 			for (unsigned int overlap = 0; overlap < transposon->histogram.size(); overlap++)
-				if (overlap + MIN_ARBITRARY_OVERLAP != PING_PONG_OVERLAP) // ignore ping-pong overlaps in the mean calculation, since they would skew the result
+				if (static_cast<int>(overlap) + MIN_ARBITRARY_OVERLAP != PING_PONG_OVERLAP) // ignore ping-pong overlaps in the mean calculation, since they would skew the result
 					meanOfArbitraryOverlaps += transposon->histogram[overlap];
 			meanOfArbitraryOverlaps = meanOfArbitraryOverlaps / (positionByOverlap.size() - 1 /* minus the one bin for ping-pong overlaps */);
 
@@ -1235,7 +1254,7 @@ void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesB
 				// calculate standard deviation of transposon score of all arbitrary overlaps
 				float stdDevOfArbitraryOverlaps = 0;
 				for (unsigned int overlap = 0; overlap < positionByOverlap.size(); overlap++)
-					if (overlap + MIN_ARBITRARY_OVERLAP != PING_PONG_OVERLAP) // ignore ping-pong stacks, since they would skew the result
+					if (static_cast<int>(overlap) + MIN_ARBITRARY_OVERLAP != PING_PONG_OVERLAP) // ignore ping-pong stacks, since they would skew the result
 						stdDevOfArbitraryOverlaps += pow(transposon->histogram[overlap] - meanOfArbitraryOverlaps, 2);
 				stdDevOfArbitraryOverlaps = sqrt(1.0 / (transposon->histogram.size() - 1 - 1 /* minus 1 for corrected sample STDDEV */) * stdDevOfArbitraryOverlaps);
 				if (stdDevOfArbitraryOverlaps <= MIN_STANDARD_DEVIATION)
@@ -1296,9 +1315,10 @@ void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesB
 // Input parameters:
 //	pingPongSignaturesByOverlap: the ping-pong signtures found by function <countStacksByGroup>
 //      bamNameStore: a mapping of numeric contig IDs to human readable names
+//	range: ping-pong signatures that are this close to one another are considered to belong to the same transposon
 // Output parameters:
 //	putativeTransposons: putative transposons that were found by the function, with p- and q-values
-void predictSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesByOverlap, TTransposonsPerGenome &putativeTransposons, TNameStore &bamNameStore)
+void predictSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesByOverlap, TTransposonsPerGenome &putativeTransposons, TNameStore &bamNameStore, unsigned int range)
 {
 	// define a putative transposon around every ping-pong signature
 	for (TPingPongSignaturesPerGenome::iterator contig = pingPongSignaturesByOverlap[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP].begin(); contig != pingPongSignaturesByOverlap[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP].end() && contig->second.size() > 0; ++contig)
@@ -1307,13 +1327,13 @@ void predictSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignatur
 		unsigned int putativeTransposonEnd = putativeTransposonStart + 1;
 		for (TPingPongSignaturesPerContig::iterator pingPongSignature = contig->second.begin(); pingPongSignature != contig->second.end(); ++pingPongSignature)
 		{
-			if (putativeTransposonEnd + PREDICT_TRANSPOSONS_SLIDING_WINDOW >= pingPongSignature->position) // merge close-by windows
+			if (putativeTransposonEnd + range >= pingPongSignature->position) // merge close-by windows
 			{
 				putativeTransposonEnd = pingPongSignature->position + 1;
 			}
 			else // the ping-pong signatures are so far apart, that they likely do not belong to the same transposon
 			{
-				if (putativeTransposonStart + PREDICT_TRANSPOSONS_LENGTH <= putativeTransposonEnd) // skip regions that are too short
+				if (putativeTransposonStart + PREDICT_TRANSPOSONS_MIN_LENGTH < putativeTransposonEnd) // skip regions that are too short
 				{
 					// name putative transposon after genomic location
 					stringstream putativeTransposonIdentifier;
@@ -1568,11 +1588,11 @@ int main(int argc, char const ** argv)
 		}
 	}
 
-	if (options.predictTransposons)
+	if (options.predictTransposonsRange > 0)
 	{
 		stopwatch("Predicting transposons based on ping-pong activity", options.verbosity);
 		TTransposonsPerGenome putativeTransposons;
-		predictSuppressedTransposons(pingPongSignaturesByOverlap, putativeTransposons, bamNameStore);
+		predictSuppressedTransposons(pingPongSignaturesByOverlap, putativeTransposons, bamNameStore, options.predictTransposonsRange);
 		stopwatch(options.verbosity);
 		stopwatch("Writing predicted transposons to file", options.verbosity);
 		writeTransposonsToFile(putativeTransposons, bamNameStore, options.browserTracks, "predicted_transposons");
