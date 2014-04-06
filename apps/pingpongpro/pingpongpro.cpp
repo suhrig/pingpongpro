@@ -735,16 +735,15 @@ void calculateFDRs(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TP
 					for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
 					{
 						double fdr = 0;
-						double degreesOfFreedom = MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP;
 						for (double x = -APPROXIMATION_RANGE; x <= +APPROXIMATION_RANGE; x += APPROXIMATION_ACCURACY)
 						{
 							if (x >= (groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][i][j][k][l] - meanOfArbitraryOverlaps) / stdDevOfArbitraryOverlaps)
 							{
-								fdr += APPROXIMATION_ACCURACY * tgamma((degreesOfFreedom+1)/2) / sqrt(degreesOfFreedom * M_PI) / tgamma(degreesOfFreedom/2) * pow(1 + x * x / degreesOfFreedom, -(degreesOfFreedom + 1)/2) * 1;
+								fdr += APPROXIMATION_ACCURACY * 1/sqrt(2*M_PI)*exp(-0.5*x*x) * 1;
 							}
 							else
 							{
-								fdr += APPROXIMATION_ACCURACY * tgamma((degreesOfFreedom+1)/2) / sqrt(degreesOfFreedom * M_PI) / tgamma(degreesOfFreedom/2) * pow(1 + x * x / degreesOfFreedom, -(degreesOfFreedom + 1)/2) * (x * stdDevOfArbitraryOverlaps + meanOfArbitraryOverlaps) / groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][i][j][k][l];
+								fdr += APPROXIMATION_ACCURACY * 1/sqrt(2*M_PI)*exp(-0.5*x*x) * (x * stdDevOfArbitraryOverlaps + meanOfArbitraryOverlaps) / groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][i][j][k][l];
 							}
 						}
 
@@ -1263,9 +1262,8 @@ void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesB
 				// calculate significance of transposon score of ping-pong overlap vs. arbitrary overlaps
 				double zValue = (transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] - meanOfArbitraryOverlaps) / stdDevOfArbitraryOverlaps;
 				double pValue = 0;
-				double degreesOfFreedom = MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP;
 				for (double x = zValue; x <= zValue + APPROXIMATION_RANGE; x += APPROXIMATION_ACCURACY)
-					pValue += APPROXIMATION_ACCURACY * tgamma((degreesOfFreedom+1)/2) / sqrt(degreesOfFreedom * M_PI) / tgamma(degreesOfFreedom/2) * pow(1 + x * x / degreesOfFreedom, -(degreesOfFreedom + 1)/2);
+					pValue += APPROXIMATION_ACCURACY * 1/sqrt(2*M_PI)*exp(-0.5*x*x);
 
 				transposon->pValue = pValue;
 				// the normalized signature count is the number of ping-pong signatures per kilobase per million mapped reads
