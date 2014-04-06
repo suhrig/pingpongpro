@@ -247,7 +247,7 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	setDate(parser, "Apr 2014");
 
 	// define parameters
-	addOption(parser, ArgParseOption("b", "browserTracks", "Generate genome browser tracks for loci with ping-pong signature and (if -t is specified) for transposons with ping-pong activity. Default: \\fIoff\\fP."));
+	addOption(parser, ArgParseOption("b", "browserTracks", "Generate genome browser tracks for loci with ping-pong signature and (if -t or -T is specified) for transposons with ping-pong activity. Default: \\fIoff\\fP."));
 
 	addOption(parser, ArgParseOption("s", "min-stack-height", "Omit stacks with fewer than the specified number of reads from the output.", ArgParseArgument::INTEGER, "NUMBER_OF_READS"));
 	setDefaultValue(parser, "min-stack-height", 0);
@@ -270,9 +270,9 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 
 	addOption(parser, ArgParseOption("o", "output", "Write output to specified directory. Default: current working directory.", ArgParseArgument::OUTPUTFILE, "PATH"));
 
-	addOption(parser, ArgParseOption("p", "plot", "Generate R plots on background noise estimation. Requires Rscript. Default: \\fIoff\\fP."));
+	addOption(parser, ArgParseOption("p", "plot", "Generate R plots on how z-scores are calculated for ping-pong signatures and (if -t or -T is specified) for transposons. Requires Rscript. Default: \\fIoff\\fP."));
 
-	addOption(parser, ArgParseOption("t", "transposons", "Check if the transposons given in the file are suppressed through ping-pong activity.", ArgParseArgument::INPUTFILE, "PATH", true));
+	addOption(parser, ArgParseOption("t", "transposons", "Check if the transposons given in the file \\fIPATH\\fP are suppressed through ping-pong activity.", ArgParseArgument::INPUTFILE, "PATH", true));
 	setValidValues(parser, "transposons", ".bed .csv .gff .gtf .tsv");
 
 	addOption(parser, ArgParseOption("T", "predict-transposons", "Predict the location of suppressed transposons based on regions with high ping-pong activity. Consider adjacent ping-pong signatures within a range of \\fIRANGE\\fP to belong to the same transposon. Default: \\fIoff\\fP.", ArgParseArgument::INTEGER, "RANGE"));
