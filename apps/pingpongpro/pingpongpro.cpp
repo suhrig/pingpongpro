@@ -179,12 +179,11 @@ struct TTransposon
 	unsigned int end;
 	float pValue; // probability that there is ping-pong activity in the region of the transposon
 	float qValue; // multiple-testing corrected <pValue>
-	float normalizedSignatureCount; // number of ping-pong signatures found in the region of the transposon, normalized by transposon length and number of input reads
-	THistogram histogram; // absolute (non-normalized) number of ping-pong signatures within the transposon region for every overlap between <MIN_ARBITRARY_OVERLAP> and <MAX_ARBITRARY_OVERLAP>
+	THistogram histogram; // number of ping-pong signatures within the transposon region for every overlap between <MIN_ARBITRARY_OVERLAP> and <MAX_ARBITRARY_OVERLAP>
 
 	// constructor to initialize with values
 	TTransposon(string identifier, unsigned int strand, unsigned int start, unsigned int end):
-		identifier(identifier), strand(strand), start(start), end(end), pValue(1), qValue(1), normalizedSignatureCount(0)
+		identifier(identifier), strand(strand), start(start), end(end), pValue(1), qValue(1)
 	{
 	}
 
@@ -197,7 +196,6 @@ struct TTransposon
 		end = transposon.end;
 		pValue = transposon.pValue;
 		qValue = transposon.qValue;
-		normalizedSignatureCount = transposon.normalizedSignatureCount;
 		histogram = transposon.histogram;
 	}
 
@@ -1246,7 +1244,6 @@ void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesB
 			{
 				transposon->pValue = 1;
 				transposon->qValue = 1;
-				transposon->normalizedSignatureCount = 0;
 			}
 			else
 			{
@@ -1266,8 +1263,6 @@ void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesB
 					pValue += APPROXIMATION_ACCURACY * 1/sqrt(2*M_PI)*exp(-0.5*x*x);
 
 				transposon->pValue = pValue;
-				// the normalized signature count is the number of ping-pong signatures per kilobase per million mapped reads
-				transposon->normalizedSignatureCount = transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] / ((static_cast<float>(transposon->end) - transposon->start)/1000);
 			}
 		}
 	}
@@ -1383,7 +1378,7 @@ void writeTransposonsToFile(TTransposonsPerGenome &transposons, TNameStore &bamN
 		transposonsBED.setf(ios::scientific, ios::floatfield);
 
 	// write file headers
-	transposonsTSV << "identifier\tstrand\tcontig\tstart\tend\tpValue\tqValue\tnormalizedSignatureCount" << endl;
+	transposonsTSV << "identifier\tstrand\tcontig\tstart\tend\tpValue\tqValue\tsignatureCount\tsignatureCountPerKB" << endl;
 	if (browserTracks)
 	{
 		// remove underscores (_) from fileName for the track name
@@ -1395,7 +1390,7 @@ void writeTransposonsToFile(TTransposonsPerGenome &transposons, TNameStore &bamN
 	for (TTransposonsPerGenome::iterator contig = transposons.begin(); contig != transposons.end(); ++contig)
 		for (TTransposonsPerContig::iterator transposon = contig->second.begin(); transposon != contig->second.end(); ++transposon)
 		{
-			transposonsTSV << transposon->identifier << '\t' << ((transposon->strand == STRAND_PLUS) ? '+' : '-') << '\t' << bamNameStore[contig->first] << '\t' << transposon->start << '\t' << transposon->end << '\t' << transposon->pValue << '\t' << transposon->qValue << '\t' << transposon->normalizedSignatureCount << endl;
+			transposonsTSV << transposon->identifier << '\t' << ((transposon->strand == STRAND_PLUS) ? '+' : '-') << '\t' << bamNameStore[contig->first] << '\t' << transposon->start << '\t' << transposon->end << '\t' << transposon->pValue << '\t' << transposon->qValue << '\t' << transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] << '\t' << transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] / ((static_cast<float>(transposon->end) - transposon->start)/1000) << endl;
 			if (browserTracks)
 				transposonsBED << bamNameStore[contig->first] << '\t' << transposon->start << '\t' << transposon->end << '\t' << transposon->identifier << '\t' << static_cast<int>(round((1 - transposon->qValue) * 1000)) << '\t' << ((transposon->strand == STRAND_PLUS) ? '+' : '-') << endl;
 		}
