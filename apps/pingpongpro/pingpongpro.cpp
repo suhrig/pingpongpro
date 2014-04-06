@@ -250,7 +250,7 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	// define parameters
 	addOption(parser, ArgParseOption("b", "browserTracks", "Generate genome browser tracks for loci with ping-pong signature and (if -t is specified) for transposons with ping-pong activity. Default: \\fIoff\\fP."));
 
-	addOption(parser, ArgParseOption("s", "min-stack-height", "Omit stacks with fewer than the specified number of reads from the output.", ArgParseArgument::INTEGER, "NUMBER_OF_READS", true));
+	addOption(parser, ArgParseOption("s", "min-stack-height", "Omit stacks with fewer than the specified number of reads from the output.", ArgParseArgument::INTEGER, "NUMBER_OF_READS"));
 	setDefaultValue(parser, "min-stack-height", 0);
 	setMinValue(parser, "min-stack-height", "0");
 
@@ -258,18 +258,18 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	setDefaultValue(parser, "input", "-");
 	setValidValues(parser, "input", ".bam .sam -");
 
-	addOption(parser, ArgParseOption("l", "min-alignment-length", "Ignore alignments in the input file that are shorter than the specified length.", ArgParseArgument::INTEGER, "LENGTH", true));
+	addOption(parser, ArgParseOption("l", "min-alignment-length", "Ignore alignments in the input file that are shorter than the specified length.", ArgParseArgument::INTEGER, "LENGTH"));
 	setDefaultValue(parser, "min-alignment-length", 24);
 	setMinValue(parser, "min-alignment-length", "1");
-	addOption(parser, ArgParseOption("L", "max-alignment-length", "Ignore alignments in the input file that are longer than the specified length.", ArgParseArgument::INTEGER, "LENGTH", true));
+	addOption(parser, ArgParseOption("L", "max-alignment-length", "Ignore alignments in the input file that are longer than the specified length.", ArgParseArgument::INTEGER, "LENGTH"));
 	setDefaultValue(parser, "max-alignment-length", 32);
 	setMinValue(parser, "max-alignment-length", "1");
 
-	addOption(parser, ArgParseOption("m", "multi-hits", "How to count multi-mapping reads.", ArgParseArgument::STRING, "METHOD", true));
+	addOption(parser, ArgParseOption("m", "multi-hits", "How to count multi-mapping reads.", ArgParseArgument::STRING, "METHOD"));
 	setDefaultValue(parser, "multi-hits", "weighted");
 	setValidValues(parser, "multi-hits", "weighted discard unique");
 
-	addOption(parser, ArgParseOption("o", "output", "Write output to specified directory. Default: current working directory.", ArgParseArgument::OUTPUTFILE, "PATH", true));
+	addOption(parser, ArgParseOption("o", "output", "Write output to specified directory. Default: current working directory.", ArgParseArgument::OUTPUTFILE, "PATH"));
 
 	addOption(parser, ArgParseOption("p", "plot", "Generate R plots on background noise estimation. Requires Rscript. Default: \\fIoff\\fP."));
 
@@ -385,9 +385,8 @@ unsigned int stopwatch(unsigned int verbosity)
 //	countMultiHits: how to count multi-mapped reads (see declaration of TCountMultiHits)
 // Output parameters:
 //	readStacks: stacks of reads that were found by the function
-//	totalReadCount: the number of reads in the <bamFile> that were not ignored (may be fractional depending on the value of <countMultiHits>)
 // Return value: 1, if the <bamFile> could not be read; 0 otherwise
-int countReadsInBamFile(BamStream &bamFile, TReadStacksPerGenome &readStacks, const unsigned int minAlignmentLength, const unsigned int maxAlignmentLength, TCountMultiHits countMultiHits, float &totalReadCount)
+int countReadsInBamFile(BamStream &bamFile, TReadStacksPerGenome &readStacks, const unsigned int minAlignmentLength, const unsigned int maxAlignmentLength, TCountMultiHits countMultiHits)
 {
 	TReadStack *position;
 
@@ -473,9 +472,6 @@ int countReadsInBamFile(BamStream &bamFile, TReadStacksPerGenome &readStacks, co
 
 			// increase stack height
 			position->reads += readWeight;
-
-			// increase read counter
-			totalReadCount += readWeight;
 		}
 	}
 
@@ -1179,11 +1175,10 @@ inline bool compareTransposonsByPValue(const TTransposonsPerContig::iterator &tr
 // than there are arbitrary signatures.
 // Input parameters:
 //	pingPongSignaturesByOverlap: the ping-pong signtures found by function <countStacksByGroup>
-//	totalReadCount: the number of reads read from the input BAM/SAM file; used for normalization of signature counts
 // Input/output parameters
 //	transposons: a list of transposons to check for ping-pong activity
 //	             every transposon is assigned a p-value and a q-value indicating the statistical significance of ping-pong activity
-void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesByOverlap, TTransposonsPerGenome &transposons, const float totalReadCount)
+void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesByOverlap, TTransposonsPerGenome &transposons)
 {
 	// slide over the genome and calculate a z-score for every transposon overlapping the current position
 	for (TTransposonsPerGenome::iterator contig = transposons.begin(); contig != transposons.end(); ++contig)
@@ -1255,7 +1250,7 @@ void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesB
 
 				transposon->pValue = pValue;
 				// the normalized signature count is the number of ping-pong signatures per kilobase per million mapped reads
-				transposon->normalizedSignatureCount = transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] / ((static_cast<float>(transposon->end) - transposon->start)/1000) / (totalReadCount/1000000);
+				transposon->normalizedSignatureCount = transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] / ((static_cast<float>(transposon->end) - transposon->start)/1000);
 			}
 		}
 	}
@@ -1300,11 +1295,10 @@ void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesB
 // but tries to find transposons automatically based on where there is a lot of ping-pong activity.
 // Input parameters:
 //	pingPongSignaturesByOverlap: the ping-pong signtures found by function <countStacksByGroup>
-//	totalReadCount: the number of reads read from the input BAM/SAM file; used for normalization of signature counts
 //      bamNameStore: a mapping of numeric contig IDs to human readable names
 // Output parameters:
 //	putativeTransposons: putative transposons that were found by the function, with p- and q-values
-void predictSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesByOverlap, TTransposonsPerGenome &putativeTransposons, const float totalReadCount, TNameStore &bamNameStore)
+void predictSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesByOverlap, TTransposonsPerGenome &putativeTransposons, TNameStore &bamNameStore)
 {
 	// define a putative transposon around every ping-pong signature
 	for (TPingPongSignaturesPerGenome::iterator contig = pingPongSignaturesByOverlap[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP].begin(); contig != pingPongSignaturesByOverlap[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP].end() && contig->second.size() > 0; ++contig)
@@ -1336,7 +1330,7 @@ void predictSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignatur
 		}
 	}
 	// check putative transposons for ping-pong activity
-	findSuppressedTransposons(pingPongSignaturesByOverlap, putativeTransposons, totalReadCount);
+	findSuppressedTransposons(pingPongSignaturesByOverlap, putativeTransposons);
 }
 
 // Function to write transposons to a TSV file.
@@ -1432,8 +1426,6 @@ int main(int argc, char const ** argv)
 
 	TReadStacksPerGenome readStacks; // stats about positions where reads on the minus strand overlap with the 5' ends of reads on the plus strand
 
-	float totalReadCount = 0; // number of reads read from the SAM/BAM file (depending on the command-line arguments, multi-hits may count less than 1)
-
 	TNameStore bamNameStore; // structure to store contig names
 
 	// read all BAM/SAM files
@@ -1452,7 +1444,7 @@ int main(int argc, char const ** argv)
 		}
 
 		// for every position in the genome, count the number of reads that start at a given position
-		if (countReadsInBamFile(bamFile, readStacks, options.minAlignmentLength, options.maxAlignmentLength, options.countMultiHits, totalReadCount) != 0)
+		if (countReadsInBamFile(bamFile, readStacks, options.minAlignmentLength, options.maxAlignmentLength, options.countMultiHits) != 0)
 			return 1;
 
 		// remember @SQ header lines from BAM file for mapping of contig IDs to human-readable names
@@ -1563,7 +1555,7 @@ int main(int argc, char const ** argv)
 	if (options.transposonFiles.size() > 0)
 	{
 		stopwatch("Checking input transposons for ping-pong activity", options.verbosity);
-		findSuppressedTransposons(pingPongSignaturesByOverlap, transposons, totalReadCount);
+		findSuppressedTransposons(pingPongSignaturesByOverlap, transposons);
 		stopwatch(options.verbosity);
 		stopwatch("Writing input transposons to file", options.verbosity);
 		writeTransposonsToFile(transposons, bamNameStore, options.browserTracks, "transposons");
@@ -1580,7 +1572,7 @@ int main(int argc, char const ** argv)
 	{
 		stopwatch("Predicting transposons based on ping-pong activity", options.verbosity);
 		TTransposonsPerGenome putativeTransposons;
-		predictSuppressedTransposons(pingPongSignaturesByOverlap, putativeTransposons, totalReadCount, bamNameStore);
+		predictSuppressedTransposons(pingPongSignaturesByOverlap, putativeTransposons, bamNameStore);
 		stopwatch(options.verbosity);
 		stopwatch("Writing predicted transposons to file", options.verbosity);
 		writeTransposonsToFile(putativeTransposons, bamNameStore, options.browserTracks, "predicted_transposons");
