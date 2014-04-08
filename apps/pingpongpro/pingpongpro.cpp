@@ -86,14 +86,14 @@ const unsigned int STRAND_MINUS = 1;
 
 // for every position on the genome the following attributes are calculated:
 //  - reads: the number of reads which begin at this position
-//  - UAt5PrimeEnd: whether the reads of the stack have uridine at the 5' end
+//  - UAt5PrimeEnd: whether the reads of the stack have adenine at position 10
 struct TReadStack
 {
 	float reads;
-	bool UAt5PrimeEnd;
+	bool AAtPosition10;
 	TReadStack():
 		reads(0),
-		UAt5PrimeEnd(false)
+		AAtPosition10(false)
 	{}
 };
 
@@ -120,17 +120,16 @@ typedef map< unsigned int, float > THeightScoreMap;
 struct TPingPongSignature
 {
 	unsigned int position: 32; // position on contig where the ping-pong overlap is located
-	unsigned int heightScoreBin: 29; // must be big enough to hold <HEIGHT_SCORE_BINS>
+	unsigned int heightScoreBin: 30; // must be big enough to hold <HEIGHT_SCORE_BINS>
 	unsigned int localHeightScoreBin: 1; // holds either <IS_ABOVE_COVERAGE> or <IS_BELOW_COVERAGE>
-	unsigned int UAt5PrimeEndOnPlusStrandBin: 1; // holds either <IS_URIDINE> or <IS_NOT_URIDINE>
-	unsigned int UAt5PrimeEndOnMinusStrandBin: 1; // holds either <IS_URIDINE> or <IS_NOT_URIDINE>
+	unsigned int baseBiasBin: 1; // holds either <HAS_BASE_BIAS> or <HAS_NO_BASE_BIAS>
 	unsigned int readsOnPlusStrand: 32; // stack height on + strand
 	unsigned int readsOnMinusStrand: 32; // stack height on - strand
 	float fdr; // chances of this putative ping-pong overlap being a false discovery
 
 	// constructor to initialize with values
-	TPingPongSignature(unsigned int position, unsigned int heightScoreBin, unsigned int localHeightScoreBin, unsigned int UAt5PrimeEndOnPlusStrandBin, unsigned int UAt5PrimeEndOnMinusStrandBin, unsigned int readsOnPlusStrand, unsigned int readsOnMinusStrand):
-		position(position), heightScoreBin(heightScoreBin), localHeightScoreBin(localHeightScoreBin), UAt5PrimeEndOnPlusStrandBin(UAt5PrimeEndOnPlusStrandBin), UAt5PrimeEndOnMinusStrandBin(UAt5PrimeEndOnMinusStrandBin), readsOnPlusStrand(readsOnPlusStrand), readsOnMinusStrand(readsOnMinusStrand), fdr(0)
+	TPingPongSignature(unsigned int position, unsigned int heightScoreBin, unsigned int localHeightScoreBin, unsigned int baseBiasBin, unsigned int readsOnPlusStrand, unsigned int readsOnMinusStrand):
+		position(position), heightScoreBin(heightScoreBin), localHeightScoreBin(localHeightScoreBin), baseBiasBin(baseBiasBin), readsOnPlusStrand(readsOnPlusStrand), readsOnMinusStrand(readsOnMinusStrand), fdr(0)
 	{
 	}
 
@@ -140,8 +139,7 @@ struct TPingPongSignature
 		position = pingPongSignature.position;
 		heightScoreBin = pingPongSignature.heightScoreBin;
 		localHeightScoreBin = pingPongSignature.localHeightScoreBin;
-		UAt5PrimeEndOnPlusStrandBin = pingPongSignature.UAt5PrimeEndOnPlusStrandBin;
-		UAt5PrimeEndOnMinusStrandBin = pingPongSignature.UAt5PrimeEndOnMinusStrandBin;
+		baseBiasBin = pingPongSignature.baseBiasBin;
 		readsOnPlusStrand = pingPongSignature.readsOnPlusStrand;
 		readsOnMinusStrand = pingPongSignature.readsOnMinusStrand;
 		fdr = pingPongSignature.fdr;
@@ -156,14 +154,14 @@ typedef vector< TPingPongSignaturesPerGenome > TPingPongSignaturesByOverlap;
 
 // ping-pong signatures are grouped and counted by the following criteria
 // - the height of the overlapping stacks
-// - whether the reads start with uridine
+// - whether the reads have adenine at position 10
 // - whether the height of the stacks are above or below the local coverage
-const unsigned int IS_URIDINE = 0; // bin for signatures with uridine at the 5' end
-const unsigned int IS_NOT_URIDINE = 1; // bin for signatures with another base than uridine at the 5' end
+const unsigned int HAS_BASE_BIAS = 0; // bin for signatures with adenine at position 10
+const unsigned int HAS_NO_BASE_BIAS = 1; // bin for signatures with another base than adenine at position 10
 const unsigned int IS_ABOVE_COVERAGE = 0; // bin for signatures with stacks that are higher than the local coverage
 const unsigned int IS_BELOW_COVERAGE = 1; // bin for signatures with stacks that are lower than the local coverage
 const unsigned int HEIGHT_SCORE_BINS = 1000; // divide signatures by height into this many bins
-typedef vector< vector< vector< vector< float > > > > TGroupedStackCounts;
+typedef vector< vector< vector< float > > > TGroupedStackCounts;
 typedef vector< TGroupedStackCounts > TGroupedStackCountsByOverlap;
 
 // types to plot histograms
@@ -471,24 +469,24 @@ int countReadsInBamFile(BamStream &bamFile, TReadStacksPerGenome &readStacks, co
 				// get a pointer to counter of the position of the read
 				position = &(readStacks[STRAND_MINUS][record.rID][record.beginPos+alignmentLength]);
 
-				// check if base at 5' end is uridine
+				// check if base at position 10 is adenine
 				size_t clippedBasesAt5PrimeEnd = 0;
 				if ((length(record.cigar) > 1) && (record.cigar[length(record.cigar)-1].operation == 'S'))
 					clippedBasesAt5PrimeEnd = record.cigar[length(record.cigar)-1].count;
-				if ((record.seq[length(record.seq)-clippedBasesAt5PrimeEnd-1] == 'A') || (record.seq[length(record.seq)-clippedBasesAt5PrimeEnd-1] == 'a')) // check if last base is uridine (we check for adenine, because reads on the - strand are stored as the complement in SAM files
-					position->UAt5PrimeEnd = true;
+				if ((record.seq[length(record.seq)-clippedBasesAt5PrimeEnd-1-9] == 'T') || (record.seq[length(record.seq)-clippedBasesAt5PrimeEnd-1-9] == 't')) // check if 10th base is adenine (we check for uracil, because reads on the - strand are stored as the complement in SAM files
+					position->AAtPosition10 = true;
 			}
 			else // read maps to plus strand
 			{
 				// get a pointer to counter of the position of the read
 				position = &(readStacks[STRAND_PLUS][record.rID][record.beginPos]);
 
-				// check if base at 5' end is uridine
+				// check if base at position 10 is adenine
 				size_t clippedBasesAt5PrimeEnd = 0;
 				if (record.cigar[0].operation == 'S')
 					clippedBasesAt5PrimeEnd = record.cigar[0].count;
-				if ((record.seq[clippedBasesAt5PrimeEnd] == 'T') || (record.seq[clippedBasesAt5PrimeEnd] == 't'))
-					position->UAt5PrimeEnd = true;
+				if ((record.seq[clippedBasesAt5PrimeEnd+9] == 'A') || (record.seq[clippedBasesAt5PrimeEnd+9] == 'a'))
+					position->AAtPosition10 = true;
 			}
 
 			// increase stack height
@@ -518,7 +516,7 @@ void mapHeightsToScores(TReadStacksPerGenome &readStacks, THeightScoreMap &heigh
 
 // Function, which groups read stacks by all possible combinations of the following criteria:
 // - the height of the overlapping stacks
-// - whether the reads start with uridine
+// - whether the reads have adenine at position 10
 // - whether the height of the stacks are above or below the local coverage
 // For every group, the number of stacks falling into that particular group is counted.
 // Input parameters:
@@ -533,8 +531,7 @@ void countStacksByGroup(TReadStacksPerGenome &readStacks, THeightScoreMap &heigh
 	// the following loop initializes a multi-dimensional array of stack counts with the following boundaries:
 	// MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP + 1 (one for each possible overlap)
 	// HEIGHT_SCORE_BINS (one of each bin of the height scores)
-	// 2 (one for reads with uridine at the 5' end of reads on the + strand and one for those with a different base)
-	// 2 (one for reads with uridine at the 5' end of reads on the - strand and one for those with a different base)
+	// 2 (one for reads with adenine at position 10 and one for those with a different base)
 	// 2 (one for stack heights below the local coverage and one for stack heights above)
 	groupedStackCountsByOverlap.resize(MAX_ARBITRARY_OVERLAP - MIN_ARBITRARY_OVERLAP + 1);
 	for (TGroupedStackCountsByOverlap::iterator i = groupedStackCountsByOverlap.begin(); i != groupedStackCountsByOverlap.end(); ++i)
@@ -543,11 +540,9 @@ void countStacksByGroup(TReadStacksPerGenome &readStacks, THeightScoreMap &heigh
 		for (TGroupedStackCounts::iterator j = i->begin(); j != i->end(); ++j)
 		{
 			j->resize(2);
-			for (vector< vector< vector< float > > >::iterator k = j->begin(); k != j->end(); ++k)
+			for (vector< vector< float > >::iterator k = j->begin(); k != j->end(); ++k)
 			{
 				k->resize(2);
-				for (vector< vector< float > >::iterator l = k->begin(); l != k->end(); ++l)
-					l->resize(2);
 			}
 		}
 	}
@@ -609,16 +604,14 @@ void countStacksByGroup(TReadStacksPerGenome &readStacks, THeightScoreMap &heigh
 							// 0.2 seems to be the magical threshold that best segregates ping-pong overlaps from arbitrary overlaps
 							unsigned int localHeightScoreBin = (localHeightScore < 0.2) ? IS_BELOW_COVERAGE : IS_ABOVE_COVERAGE;
 
-							// calculate score based on whether the stack on the + strand has Uridine at the 5' end
-							unsigned int uridinePlusBin = (positionPlusStrand->second.UAt5PrimeEnd) ? IS_URIDINE : IS_NOT_URIDINE;
-							// calculate score based on whether the stack on the - strand has Uridine at the 5' end
-							unsigned int uridineMinusBin = (stacksOnMinusStrand[overlap - MIN_ARBITRARY_OVERLAP]->second.UAt5PrimeEnd) ? IS_URIDINE : IS_NOT_URIDINE;
+							// calculate score based on whether the stack has adenine at position 10
+							unsigned int baseBiasBin = (positionPlusStrand->second.AAtPosition10 || stacksOnMinusStrand[overlap - MIN_ARBITRARY_OVERLAP]->second.AAtPosition10) ? HAS_BASE_BIAS : HAS_NO_BASE_BIAS;
 
 							// increase bin counter
-							groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][heightScoreBin][uridinePlusBin][uridineMinusBin][localHeightScoreBin]++;
+							groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][heightScoreBin][baseBiasBin][localHeightScoreBin]++;
 
 							// keep a list of putative ping-pong signatures, so we can analyze later, which of them are (likely) true
-							pingPongSignaturesByOverlap[overlap - MIN_ARBITRARY_OVERLAP][contigPlusStrand->first].push_back(TPingPongSignature(positionPlusStrand->first, heightScoreBin, localHeightScoreBin, uridinePlusBin, uridineMinusBin, positionPlusStrand->second.reads, stacksOnMinusStrand[overlap - MIN_ARBITRARY_OVERLAP]->second.reads));
+							pingPongSignaturesByOverlap[overlap - MIN_ARBITRARY_OVERLAP][contigPlusStrand->first].push_back(TPingPongSignature(positionPlusStrand->first, heightScoreBin, localHeightScoreBin, baseBiasBin, positionPlusStrand->second.reads, stacksOnMinusStrand[overlap - MIN_ARBITRARY_OVERLAP]->second.reads));
 						}
 					}
 				}
@@ -655,10 +648,9 @@ void collapseBins(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPi
 
 		// initialize collapsed bin with 0
 		for (TGroupedStackCountsByOverlap::iterator i = collapsed.begin(); i != collapsed.end(); ++i)
-			for (vector< vector< vector< float > > >::iterator j = (*i)[collapsedBin].begin(); j != (*i)[collapsedBin].end(); ++j)
-				for (vector< vector< float > >::iterator k = j->begin(); k != j->end(); ++k)
-					for (vector< float >::iterator l = k->begin(); l != k->end(); ++l)
-						*l = 0;
+			for (vector< vector< float > >::iterator j = (*i)[collapsedBin].begin(); j != (*i)[collapsedBin].end(); ++j)
+				for (vector< float >::iterator k = j->begin(); k != j->end(); ++k)
+					*k = 0;
 
 		unsigned int emptyBins;
 		do {
@@ -668,14 +660,13 @@ void collapseBins(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TPi
 			for (unsigned int overlap = 0; overlap < groupedStackCountsByOverlap.size(); overlap++)
 				for (unsigned int i = 0; i < groupedStackCountsByOverlap[overlap][bin].size(); i++)
 					for (unsigned int j = 0; j < groupedStackCountsByOverlap[overlap][bin][i].size(); j++)
-						for (unsigned int k = 0; k < groupedStackCountsByOverlap[overlap][bin][i][j].size(); k++)
-						{
-							collapsed[overlap][collapsedBin][i][j][k] += groupedStackCountsByOverlap[overlap][bin][i][j][k];
+					{
+						collapsed[overlap][collapsedBin][i][j] += groupedStackCountsByOverlap[overlap][bin][i][j];
 
-							// check if collapsedBin is still empty to decide whether to collapse even more
-							if (collapsed[overlap][collapsedBin][i][j][k] <= 0)
-								emptyBins++;
-						}
+						// check if collapsedBin is still empty to decide whether to collapse even more
+						if (collapsed[overlap][collapsedBin][i][j] <= 0)
+							emptyBins++;
+					}
 
 			// remember with which new bin the current bin was merged
 			oldBinCollapsedBinMap[bin] = collapsedBin;
@@ -715,58 +706,57 @@ void calculateFDRs(TGroupedStackCountsByOverlap &groupedStackCountsByOverlap, TP
 	for (unsigned int i = 0; i < groupedStackCountsByOverlap.begin()->size(); i++)
 		for (unsigned int j = 0; j < (*groupedStackCountsByOverlap.begin())[i].size(); j++)
 			for (unsigned int k = 0; k < (*groupedStackCountsByOverlap.begin())[i][j].size(); k++)
-				for (unsigned int l = 0; l < (*groupedStackCountsByOverlap.begin())[i][j][k].size(); l++)
+			{
+				// calculate mean for all the bins of arbitrary overlaps
+				float meanOfArbitraryOverlaps = 0;
+				for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
+					if (overlap != PING_PONG_OVERLAP) // ignore ping-pong stacks, since they would skew the result
+						meanOfArbitraryOverlaps += groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][i][j][k];
+				meanOfArbitraryOverlaps = meanOfArbitraryOverlaps / (groupedStackCountsByOverlap.size() - 1 /* minus the one bin for ping-pong overlaps */);
+
+				// calculate standard deviation for all the bins of arbitrary overlaps
+				float stdDevOfArbitraryOverlaps = 0;
+				for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
+					if (overlap != PING_PONG_OVERLAP) // ignore ping-pong stacks, since they would skew the result
+						stdDevOfArbitraryOverlaps += pow(groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][i][j][k] - meanOfArbitraryOverlaps, 2);
+				stdDevOfArbitraryOverlaps = sqrt(1.0 / (groupedStackCountsByOverlap.size() - 1 - 1 /* minus 1 for corrected sample STDDEV */) * stdDevOfArbitraryOverlaps);
+				if (stdDevOfArbitraryOverlaps <= MIN_STANDARD_DEVIATION)
+					stdDevOfArbitraryOverlaps = MIN_STANDARD_DEVIATION; // prevent division by 0, in case the STDDEV is 0
+
+				// calculate expected number of false positives among the putative ping-pong signatures
+				for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
 				{
-					// calculate mean for all the bins of arbitrary overlaps
-					float meanOfArbitraryOverlaps = 0;
-					for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
-						if (overlap != PING_PONG_OVERLAP) // ignore ping-pong stacks, since they would skew the result
-							meanOfArbitraryOverlaps += groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][i][j][k][l];
-					meanOfArbitraryOverlaps = meanOfArbitraryOverlaps / (groupedStackCountsByOverlap.size() - 1 /* minus the one bin for ping-pong overlaps */);
-
-					// calculate standard deviation for all the bins of arbitrary overlaps
-					float stdDevOfArbitraryOverlaps = 0;
-					for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
-						if (overlap != PING_PONG_OVERLAP) // ignore ping-pong stacks, since they would skew the result
-							stdDevOfArbitraryOverlaps += pow(groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][i][j][k][l] - meanOfArbitraryOverlaps, 2);
-					stdDevOfArbitraryOverlaps = sqrt(1.0 / (groupedStackCountsByOverlap.size() - 1 - 1 /* minus 1 for corrected sample STDDEV */) * stdDevOfArbitraryOverlaps);
-					if (stdDevOfArbitraryOverlaps <= MIN_STANDARD_DEVIATION)
-						stdDevOfArbitraryOverlaps = MIN_STANDARD_DEVIATION; // prevent division by 0, in case the STDDEV is 0
-
-					// calculate expected number of false positives among the putative ping-pong signatures
-					for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
+					double fdr = 0;
+					for (double x = -APPROXIMATION_RANGE; x <= +APPROXIMATION_RANGE; x += APPROXIMATION_ACCURACY)
 					{
-						double fdr = 0;
-						for (double x = -APPROXIMATION_RANGE; x <= +APPROXIMATION_RANGE; x += APPROXIMATION_ACCURACY)
+						if (x >= (groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][i][j][k] - meanOfArbitraryOverlaps) / stdDevOfArbitraryOverlaps)
 						{
-							if (x >= (groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][i][j][k][l] - meanOfArbitraryOverlaps) / stdDevOfArbitraryOverlaps)
-							{
-								fdr += APPROXIMATION_ACCURACY * 1/sqrt(2*M_PI)*exp(-0.5*x*x) * 1;
-							}
-							else
-							{
-								fdr += APPROXIMATION_ACCURACY * 1/sqrt(2*M_PI)*exp(-0.5*x*x) * (x * stdDevOfArbitraryOverlaps + meanOfArbitraryOverlaps) / groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][i][j][k][l];
-							}
+							fdr += APPROXIMATION_ACCURACY * 1/sqrt(2*M_PI)*exp(-0.5*x*x) * 1;
 						}
-
-						if (fdr < 0)
+						else
 						{
-							fdr = 0;
+							fdr += APPROXIMATION_ACCURACY * 1/sqrt(2*M_PI)*exp(-0.5*x*x) * (x * stdDevOfArbitraryOverlaps + meanOfArbitraryOverlaps) / groupedStackCountsByOverlap[overlap - MIN_ARBITRARY_OVERLAP][i][j][k];
 						}
-						else if (fdr > 1)
-						{
-							fdr = 1;
-						}
-
-						FDRs[overlap - MIN_ARBITRARY_OVERLAP][i][j][k][l] = fdr;
 					}
+
+					if (fdr < 0)
+					{
+						fdr = 0;
+					}
+					else if (fdr > 1)
+					{
+						fdr = 1;
+					}
+
+					FDRs[overlap - MIN_ARBITRARY_OVERLAP][i][j][k] = fdr;
 				}
+			}
 
 	// assign a FDR to every putative ping-pong signature
 	for (int overlap = MIN_ARBITRARY_OVERLAP; overlap <= MAX_ARBITRARY_OVERLAP; overlap++)
 		for (TPingPongSignaturesPerGenome::iterator contig = pingPongSignaturesByOverlap[overlap - MIN_ARBITRARY_OVERLAP].begin(); contig != pingPongSignaturesByOverlap[overlap - MIN_ARBITRARY_OVERLAP].end(); ++contig)
 			for (TPingPongSignaturesPerContig::iterator pingPongSignature = contig->second.begin(); pingPongSignature != contig->second.end(); ++pingPongSignature)
-				pingPongSignature->fdr = FDRs[overlap - MIN_ARBITRARY_OVERLAP][pingPongSignature->heightScoreBin][pingPongSignature->UAt5PrimeEndOnPlusStrandBin][pingPongSignature->UAt5PrimeEndOnMinusStrandBin][pingPongSignature->localHeightScoreBin];
+				pingPongSignature->fdr = FDRs[overlap - MIN_ARBITRARY_OVERLAP][pingPongSignature->heightScoreBin][pingPongSignature->baseBiasBin][pingPongSignature->localHeightScoreBin];
 }
 
 // function to replace all occurrences of a string within a string for another string
@@ -947,8 +937,7 @@ void generateGroupedStackCountsPlot(TGroupedStackCountsByOverlap &groupedStackCo
 	int binCount =
 		groupedStackCountsByOverlap.begin()->size() *
 		groupedStackCountsByOverlap.begin()->begin()->size() *
-		groupedStackCountsByOverlap.begin()->begin()->begin()->size() *
-		groupedStackCountsByOverlap.begin()->begin()->begin()->begin()->size();
+		groupedStackCountsByOverlap.begin()->begin()->begin()->size();
 	THistograms histograms(binCount);
 	vector< string > plotTitles(binCount);
 
@@ -958,29 +947,23 @@ void generateGroupedStackCountsPlot(TGroupedStackCountsByOverlap &groupedStackCo
 	for (int i = groupedStackCountsByOverlap.begin()->size() - 1; i >= 0; i--)
 		for (unsigned int j = 0; j < (*groupedStackCountsByOverlap.begin())[i].size(); j++)
 			for (unsigned int k = 0; k < (*groupedStackCountsByOverlap.begin())[i][j].size(); k++)
-				for (unsigned int l = 0; l < (*groupedStackCountsByOverlap.begin())[i][j][k].size(); l++)
+			{
+				histograms[x].resize(groupedStackCountsByOverlap.size());
+				for (unsigned int overlap = 0; overlap < groupedStackCountsByOverlap.size(); overlap++)
 				{
-					histograms[x].resize(groupedStackCountsByOverlap.size());
-					for (unsigned int overlap = 0; overlap < groupedStackCountsByOverlap.size(); overlap++)
-					{
-						histograms[x][overlap] = groupedStackCountsByOverlap[overlap][i][j][k][l];
+					histograms[x][overlap] = groupedStackCountsByOverlap[overlap][i][j][k];
 
-						ss << "z-scores of signatures with the following properties:" << endl;
-						ss << "stack height score of " << (groupedStackCountsByOverlap.begin()->size() - 1 - i) << endl;
-						if ((j == IS_URIDINE) && (k == IS_URIDINE))
-							ss << "uridine at the 5'-end on both strands" << endl;
-						else if ((j == IS_URIDINE) && (k != IS_URIDINE))
-							ss << "uridine at the 5'-end on the + strand" << endl;
-						else if ((j != IS_URIDINE) && (k == IS_URIDINE))
-							ss << "uridine at the 5'-end on the - strand" << endl;
-						else if ((j != IS_URIDINE) && (k != IS_URIDINE))
-							ss << "no uridine at the 5'-end on either strand" << endl;
-						ss << "stack height " << ((l == IS_ABOVE_COVERAGE) ? "above" : "below") << " the local coverage";
-						plotTitles[x] = ss.str();
-						ss.str("");
-					}
-					x++;
+					ss << "z-scores of signatures with the following properties:" << endl;
+					ss << "stack height score of " << (groupedStackCountsByOverlap.begin()->size() - 1 - i) << endl;
+					if (j != HAS_BASE_BIAS)
+						ss << "no ";
+					ss << "adenine at position 10" << endl;
+					ss << "stack height " << ((k == IS_ABOVE_COVERAGE) ? "above" : "below") << " the local coverage";
+					plotTitles[x] = ss.str();
+					ss.str("");
 				}
+				x++;
+			}
 
 	// render histograms
 	plotHistogram("ping-pong_signature_z-scores", plotTitles, histograms);
@@ -1398,7 +1381,7 @@ void writeTransposonsToFile(TTransposonsPerGenome &transposons, TNameStore &bamN
 	for (TTransposonsPerGenome::iterator contig = transposons.begin(); contig != transposons.end(); ++contig)
 		for (TTransposonsPerContig::iterator transposon = contig->second.begin(); transposon != contig->second.end(); ++transposon)
 		{
-			transposonsTSV << transposon->identifier << '\t' << ((transposon->strand == STRAND_PLUS) ? '+' : '-') << '\t' << bamNameStore[contig->first] << '\t' << transposon->start << '\t' << transposon->end << '\t' << transposon->pValue << '\t' << transposon->qValue << '\t' << transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] << '\t' << transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] / ((static_cast<float>(transposon->end) - transposon->start)/1000) << '\t' << (transposon->readsOnPlusStrand/transposon->ReadsOnMinusStrand) << endl;
+			transposonsTSV << transposon->identifier << '\t' << ((transposon->strand == STRAND_PLUS) ? '+' : '-') << '\t' << bamNameStore[contig->first] << '\t' << transposon->start << '\t' << transposon->end << '\t' << transposon->pValue << '\t' << transposon->qValue << '\t' << transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] << '\t' << transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] / ((static_cast<float>(transposon->end) - transposon->start)/1000) << '\t' << (transposon->readsOnPlusStrand/transposon->readsOnMinusStrand) << endl;
 			if (browserTracks)
 				transposonsBED << bamNameStore[contig->first] << '\t' << transposon->start << '\t' << transposon->end << '\t' << transposon->identifier << '\t' << static_cast<int>(round((1 - transposon->qValue) * 1000)) << '\t' << ((transposon->strand == STRAND_PLUS) ? '+' : '-') << endl;
 		}
