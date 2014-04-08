@@ -179,11 +179,13 @@ struct TTransposon
 	unsigned int end;
 	float pValue; // probability that there is ping-pong activity in the region of the transposon
 	float qValue; // multiple-testing corrected <pValue>
+	float readsOnPlusStrand;
+	float readsOnMinusStrand;
 	THistogram histogram; // number of ping-pong signatures within the transposon region for every overlap between <MIN_ARBITRARY_OVERLAP> and <MAX_ARBITRARY_OVERLAP>
 
 	// constructor to initialize with values
 	TTransposon(string identifier, unsigned int strand, unsigned int start, unsigned int end):
-		identifier(identifier), strand(strand), start(start), end(end), pValue(1), qValue(1)
+		identifier(identifier), strand(strand), start(start), end(end), pValue(1), qValue(1), readsOnPlusStrand(0), readsOnMinusStrand(0)
 	{
 	}
 
@@ -197,6 +199,8 @@ struct TTransposon
 		pValue = transposon.pValue;
 		qValue = transposon.qValue;
 		histogram = transposon.histogram;
+		readsOnPlusStrand = transposon.readsOnPlusStrand;
+		readsOnMinusStrand = transposon.readsOnMinusStrand;
 	}
 
 	// operator for sorting of a list of transposons by genomic position
@@ -1231,6 +1235,10 @@ void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesB
 				}
 
 				transposon->histogram[overlap] = sumOfScores;
+
+				// sum up the number of reads on each strand
+				transposon->readsOnPlusStrand += positionByOverlap[overlap]->readsOnPlusStrand;
+				transposon->readsOnMinusStrand += positionByOverlap[overlap]->readsOnMinusStrand;
 			}
 
 			// calculate mean transposon score of all arbitrary overlaps
@@ -1378,7 +1386,7 @@ void writeTransposonsToFile(TTransposonsPerGenome &transposons, TNameStore &bamN
 		transposonsBED.setf(ios::scientific, ios::floatfield);
 
 	// write file headers
-	transposonsTSV << "identifier\tstrand\tcontig\tstart\tend\tpValue\tqValue\tsignatureCount\tsignatureCountPerKB" << endl;
+	transposonsTSV << "identifier\tstrand\tcontig\tstart\tend\tpValue\tqValue\tsignatureCount\tsignatureCountPerKB\tstrandRatio" << endl;
 	if (browserTracks)
 	{
 		// remove underscores (_) from fileName for the track name
@@ -1390,7 +1398,7 @@ void writeTransposonsToFile(TTransposonsPerGenome &transposons, TNameStore &bamN
 	for (TTransposonsPerGenome::iterator contig = transposons.begin(); contig != transposons.end(); ++contig)
 		for (TTransposonsPerContig::iterator transposon = contig->second.begin(); transposon != contig->second.end(); ++transposon)
 		{
-			transposonsTSV << transposon->identifier << '\t' << ((transposon->strand == STRAND_PLUS) ? '+' : '-') << '\t' << bamNameStore[contig->first] << '\t' << transposon->start << '\t' << transposon->end << '\t' << transposon->pValue << '\t' << transposon->qValue << '\t' << transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] << '\t' << transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] / ((static_cast<float>(transposon->end) - transposon->start)/1000) << endl;
+			transposonsTSV << transposon->identifier << '\t' << ((transposon->strand == STRAND_PLUS) ? '+' : '-') << '\t' << bamNameStore[contig->first] << '\t' << transposon->start << '\t' << transposon->end << '\t' << transposon->pValue << '\t' << transposon->qValue << '\t' << transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] << '\t' << transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] / ((static_cast<float>(transposon->end) - transposon->start)/1000) << '\t' << (transposon->readsOnPlusStrand/transposon->ReadsOnMinusStrand) << endl;
 			if (browserTracks)
 				transposonsBED << bamNameStore[contig->first] << '\t' << transposon->start << '\t' << transposon->end << '\t' << transposon->identifier << '\t' << static_cast<int>(round((1 - transposon->qValue) * 1000)) << '\t' << ((transposon->strand == STRAND_PLUS) ? '+' : '-') << endl;
 		}
