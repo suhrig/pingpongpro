@@ -900,7 +900,7 @@ void writePingPongSignaturesToFile(TPingPongSignaturesPerGenome &pingPongSignatu
 	{
 		readsOnPlusStrandBedGraph << "track type=bedGraph name=\"read stacks on + strand\" description=\"height of read stacks on the + strand\" visibility=full" << endl;
 		readsOnMinusStrandBedGraph << "track type=bedGraph name=\"read stacks on - strand\" description=\"height of read stacks on the - strand\" visibility=full" << endl;
-		scoresBedGraph << "track type=bedGraph name=\"scores\" description=\"scores of ping-pong stacks (1 - FDR)\" visibility=full viewLimits=0.0:1.0 autoScale=off" << endl;
+		scoresBedGraph << "track type=bedGraph name=\"scores\" description=\"scores of ping-pong signatures (1 - FDR)\" visibility=full viewLimits=0.0:1.0 autoScale=off" << endl;
 	}
 
 	// write a line for each ping-pong signature
@@ -1374,7 +1374,7 @@ void writeTransposonsToFile(TTransposonsPerGenome &transposons, TNameStore &bamN
 	{
 		// remove underscores (_) from fileName for the track name
 		stringReplace(fileName, "_", " ");
-		transposonsBED << "track name=\"" << fileName << "\" description=\"" << fileName << " shaded by ping-pong activity (1000 * (1 - corrected p-value))\" useScore=1 visibility=dense" << endl;
+		transposonsBED << "track name=\"" << fileName << "\" description=\"" << fileName << " shaded by ping-pong activity (1000 * (1 - q-value))\" useScore=1 visibility=dense" << endl;
 	}
 
 	// write transposon data in TSV/BED format
