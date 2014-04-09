@@ -908,12 +908,29 @@ void writePingPongSignaturesToFile(TPingPongSignaturesPerGenome &pingPongSignatu
 		for (TPingPongSignaturesPerContig::iterator pingPongSignature = contig->second.begin(); pingPongSignature != contig->second.end(); ++pingPongSignature)
 			if ((pingPongSignature->readsOnPlusStrand >= minStackHeight) && (pingPongSignature->readsOnMinusStrand >= minStackHeight))
 			{
-				signaturesTSV << bamNameStore[contig->first] << '\t' << pingPongSignature->position << '\t' << pingPongSignature->fdr << '\t' << pingPongSignature->readsOnPlusStrand << '\t' << pingPongSignature->readsOnMinusStrand << endl;
+				signaturesTSV
+					<< bamNameStore[contig->first] << '\t'
+					<< pingPongSignature->position << '\t'
+					<< pingPongSignature->fdr << '\t'
+					<< pingPongSignature->readsOnPlusStrand << '\t'
+					<< pingPongSignature->readsOnMinusStrand << endl;
 				if (browserTracks)
 				{
-					readsOnPlusStrandBedGraph << bamNameStore[contig->first] << '\t' << pingPongSignature->position << '\t' << (pingPongSignature->position+1) << '\t' << pingPongSignature->readsOnPlusStrand << endl;
-					readsOnMinusStrandBedGraph << bamNameStore[contig->first] << '\t' << pingPongSignature->position << '\t' << (pingPongSignature->position+1) << '\t' << pingPongSignature->readsOnMinusStrand << endl;
-					scoresBedGraph << bamNameStore[contig->first] << '\t' << pingPongSignature->position << '\t' << (pingPongSignature->position+1) << '\t' << (1-pingPongSignature->fdr) << endl;
+					readsOnPlusStrandBedGraph
+						<< bamNameStore[contig->first] << '\t'
+						<< pingPongSignature->position << '\t'
+						<< (pingPongSignature->position+1) << '\t'
+						<< pingPongSignature->readsOnPlusStrand << endl;
+					readsOnMinusStrandBedGraph
+						<< bamNameStore[contig->first] << '\t'
+						<< pingPongSignature->position << '\t'
+						<< (pingPongSignature->position+1) << '\t'
+						<< pingPongSignature->readsOnMinusStrand << endl;
+					scoresBedGraph
+						<< bamNameStore[contig->first] << '\t'
+						<< pingPongSignature->position << '\t'
+						<< (pingPongSignature->position+1) << '\t'
+						<< (1-pingPongSignature->fdr) << endl;
 				}
 			}
 
@@ -1385,9 +1402,25 @@ void writeTransposonsToFile(TTransposonsPerGenome &transposons, TNameStore &bamN
 	for (TTransposonsPerGenome::iterator contig = transposons.begin(); contig != transposons.end(); ++contig)
 		for (TTransposonsPerContig::iterator transposon = contig->second.begin(); transposon != contig->second.end(); ++transposon)
 		{
-			transposonsTSV << transposon->identifier << '\t' << ((transposon->strand == STRAND_PLUS) ? '+' : '-') << '\t' << bamNameStore[contig->first] << '\t' << transposon->start << '\t' << transposon->end << '\t' << transposon->pValue << '\t' << transposon->qValue << '\t' << transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] << '\t' << transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] / ((static_cast<float>(transposon->end) - transposon->start)/1000) << '\t' << ((transposon->readsOnMinusStrand > 0) ? transposon->readsOnPlusStrand/transposon->readsOnMinusStrand : 1) << endl;
+			transposonsTSV
+				<< transposon->identifier << '\t'
+				<< ((transposon->strand == STRAND_PLUS) ? '+' : '-') << '\t'
+				<< bamNameStore[contig->first] << '\t'
+				<< transposon->start << '\t'
+				<< transposon->end << '\t'
+				<< transposon->pValue << '\t'
+				<< transposon->qValue << '\t'
+				<< transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] << '\t'
+				<< transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] / ((static_cast<float>(transposon->end) - transposon->start)/1000) << '\t'
+				<< ((transposon->readsOnMinusStrand > 0) ? transposon->readsOnPlusStrand/transposon->readsOnMinusStrand : 1) << endl;
 			if (browserTracks)
-				transposonsBED << bamNameStore[contig->first] << '\t' << transposon->start << '\t' << transposon->end << '\t' << transposon->identifier << '\t' << static_cast<int>(round((1 - transposon->qValue) * 1000)) << '\t' << ((transposon->strand == STRAND_PLUS) ? '+' : '-') << endl;
+				transposonsBED
+					<< bamNameStore[contig->first] << '\t'
+					<< transposon->start << '\t'
+					<< transposon->end << '\t'
+					<< transposon->identifier << '\t'
+					<< static_cast<int>(round((1 - transposon->qValue) * 1000)) << '\t'
+					<< ((transposon->strand == STRAND_PLUS) ? '+' : '-') << endl;
 		}
 
 	// close output files
