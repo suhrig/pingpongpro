@@ -123,12 +123,12 @@ struct TPingPongSignature
 	unsigned int heightScoreBin: 30; // must be big enough to hold <HEIGHT_SCORE_BINS>
 	unsigned int localHeightScoreBin: 1; // holds either <IS_ABOVE_COVERAGE> or <IS_BELOW_COVERAGE>
 	unsigned int baseBiasBin: 1; // holds either <HAS_BASE_BIAS> or <HAS_NO_BASE_BIAS>
-	unsigned int readsOnPlusStrand: 32; // stack height on + strand
-	unsigned int readsOnMinusStrand: 32; // stack height on - strand
+	float readsOnPlusStrand; // stack height on + strand
+	float readsOnMinusStrand; // stack height on - strand
 	float fdr; // chances of this putative ping-pong overlap being a false discovery
 
 	// constructor to initialize with values
-	TPingPongSignature(unsigned int position, unsigned int heightScoreBin, unsigned int localHeightScoreBin, unsigned int baseBiasBin, unsigned int readsOnPlusStrand, unsigned int readsOnMinusStrand):
+	TPingPongSignature(unsigned int position, unsigned int heightScoreBin, unsigned int localHeightScoreBin, unsigned int baseBiasBin, float readsOnPlusStrand, float readsOnMinusStrand):
 		position(position), heightScoreBin(heightScoreBin), localHeightScoreBin(localHeightScoreBin), baseBiasBin(baseBiasBin), readsOnPlusStrand(readsOnPlusStrand), readsOnMinusStrand(readsOnMinusStrand), fdr(0)
 	{
 	}
