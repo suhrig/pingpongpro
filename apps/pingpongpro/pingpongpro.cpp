@@ -404,8 +404,9 @@ unsigned int stopwatch(unsigned int verbosity)
 //	countMultiHits: how to count multi-mapped reads (see declaration of TCountMultiHits)
 // Output parameters:
 //	readStacks: stacks of reads that were found by the function
+//	totalReadCount: the total number of reads that were not discarded
 // Return value: 1, if the <bamFile> could not be read; 0 otherwise
-int countReadsInBamFile(BamStream &bamFile, TReadStacksPerGenome &readStacks, const unsigned int minAlignmentLength, const unsigned int maxAlignmentLength, TCountMultiHits countMultiHits)
+int countReadsInBamFile(BamStream &bamFile, TReadStacksPerGenome &readStacks, const unsigned int minAlignmentLength, const unsigned int maxAlignmentLength, TCountMultiHits countMultiHits, double &totalReadCount)
 {
 	TReadStack *position;
 
@@ -491,9 +492,9 @@ int countReadsInBamFile(BamStream &bamFile, TReadStacksPerGenome &readStacks, co
 
 			// increase stack height
 			position->reads += readWeight;
+			totalReadCount += readWeight;
 		}
 	}
-
 	return 0;
 }
 
@@ -1230,8 +1231,7 @@ void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesB
 					while ((positionByOverlap[overlap]->position <= transposon->end) && (positionByOverlap[overlap] != pingPongSignaturesByOverlap[overlap][contig->first].end()))
 					{
 						// sum up scores of all signatures (ping-pong or arbitrary) within the transposon region
-						sumOfScores += (1 - positionByOverlap[overlap]->fdr);
-						++(positionByOverlap[overlap]);
+						sumOfScores += (positionByOverlap[overlap]->readsOnPlusStrand + positionByOverlap[overlap]->readsOnMinusStrand) * (1 - positionByOverlap[overlap]->fdr);
 
 						// sum up the number of reads on each strand (for ping-pong overlaps only)
 						if (static_cast<int>(overlap) + MIN_ARBITRARY_OVERLAP == PING_PONG_OVERLAP)
@@ -1239,6 +1239,8 @@ void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesB
 							transposon->readsOnPlusStrand += positionByOverlap[overlap]->readsOnPlusStrand;
 							transposon->readsOnMinusStrand += positionByOverlap[overlap]->readsOnMinusStrand;
 						}
+
+						++(positionByOverlap[overlap]);
 					}
 				}
 
@@ -1255,7 +1257,6 @@ void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesB
 			if ((meanOfArbitraryOverlaps == 0) && (transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] == 0)) // there are no ping-pong signatures in the region of the transposon
 			{
 				transposon->pValue = 1;
-				transposon->qValue = 1;
 			}
 			else
 			{
@@ -1292,7 +1293,11 @@ void findSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignaturesB
 	list< TTransposonsPerContig::iterator >::reverse_iterator transposon = transposonsSortedByPValue.rbegin();
 	while (transposon != transposonsSortedByPValue.rend())
 	{
-		if ((*transposon)->pValue == previousPValue)
+		if (((*transposon)->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP]) / ((*transposon)->readsOnPlusStrand + (*transposon)->readsOnMinusStrand) < 0.2) // more than 80% of reads were discarded => this is probably a false positive
+		{
+			(*transposon)->qValue = 1;
+		}
+		else if ((*transposon)->pValue == previousPValue)
 		{
 			// If two transposons have the same p-value, re-use the previously calculated q-value.
 			// This is pretty unlikely, but ensures that two transposons with the same p-value also
@@ -1364,7 +1369,8 @@ void predictSuppressedTransposons(TPingPongSignaturesByOverlap &pingPongSignatur
 //      bamNameStore: a mapping of numeric contig IDs to human readable names
 //	browserTracks: if set to true, then a BED file is generated in addition to the TSV file
 //	fileName: the name of the file that the transposons are written to, without the file extension
-void writeTransposonsToFile(TTransposonsPerGenome &transposons, TNameStore &bamNameStore, bool browserTracks, string fileName)
+//	totalReadCount: the total number of reads (as returned by countReadsInBamFile) for normalization
+void writeTransposonsToFile(TTransposonsPerGenome &transposons, TNameStore &bamNameStore, bool browserTracks, string fileName, const double totalReadCount)
 {
 	// open files to write transposon data to
 	ofstream transposonsTSV((fileName + ".tsv").c_str(), ios_base::out);
@@ -1390,7 +1396,7 @@ void writeTransposonsToFile(TTransposonsPerGenome &transposons, TNameStore &bamN
 		transposonsBED.setf(ios::scientific, ios::floatfield);
 
 	// write file headers
-	transposonsTSV << "identifier\tstrand\tcontig\tstart\tend\tpValue\tqValue\tsignatureCount\tsignatureCountPerKB\tstrandRatio" << endl;
+	transposonsTSV << "identifier\tstrand\tcontig\tstart\tend\tpValue\tqValue\tpingPongReads\tnormalizedPingPongReads\tdiscardedPingPongReads\tstrandRatio" << endl;
 	if (browserTracks)
 	{
 		// remove underscores (_) from fileName for the track name
@@ -1411,7 +1417,8 @@ void writeTransposonsToFile(TTransposonsPerGenome &transposons, TNameStore &bamN
 				<< transposon->pValue << '\t'
 				<< transposon->qValue << '\t'
 				<< transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] << '\t'
-				<< transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] / ((static_cast<float>(transposon->end) - transposon->start)/1000) << '\t'
+				<< transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP] / ((static_cast<float>(transposon->end) - transposon->start)/1000) / (totalReadCount/1000000) << '\t'
+				<< ((transposon->readsOnPlusStrand+transposon->readsOnMinusStrand) - transposon->histogram[PING_PONG_OVERLAP - MIN_ARBITRARY_OVERLAP]) << '\t'
 				<< ((transposon->readsOnMinusStrand > 0) ? transposon->readsOnPlusStrand/transposon->readsOnMinusStrand : 1) << endl;
 			if (browserTracks)
 				transposonsBED
@@ -1469,6 +1476,8 @@ int main(int argc, char const ** argv)
 
 	TNameStore bamNameStore; // structure to store contig names
 
+	double totalReadCount = 0;
+
 	// read all BAM/SAM files
 	if (options.verbosity >= 3)
 		cerr << "Counting reads in SAM/BAM files" << endl;
@@ -1485,7 +1494,7 @@ int main(int argc, char const ** argv)
 		}
 
 		// for every position in the genome, count the number of reads that start at a given position
-		if (countReadsInBamFile(bamFile, readStacks, options.minAlignmentLength, options.maxAlignmentLength, options.countMultiHits) != 0)
+		if (countReadsInBamFile(bamFile, readStacks, options.minAlignmentLength, options.maxAlignmentLength, options.countMultiHits, totalReadCount) != 0)
 			return 1;
 
 		// remember @SQ header lines from BAM file for mapping of contig IDs to human-readable names
@@ -1599,7 +1608,7 @@ int main(int argc, char const ** argv)
 		findSuppressedTransposons(pingPongSignaturesByOverlap, transposons);
 		stopwatch(options.verbosity);
 		stopwatch("Writing input transposons to file", options.verbosity);
-		writeTransposonsToFile(transposons, bamNameStore, options.browserTracks, "transposons");
+		writeTransposonsToFile(transposons, bamNameStore, options.browserTracks, "transposons", totalReadCount);
 		stopwatch(options.verbosity);
 		if (options.plot)
 		{
@@ -1616,7 +1625,7 @@ int main(int argc, char const ** argv)
 		predictSuppressedTransposons(pingPongSignaturesByOverlap, putativeTransposons, bamNameStore, options.predictTransposonsRange);
 		stopwatch(options.verbosity);
 		stopwatch("Writing predicted transposons to file", options.verbosity);
-		writeTransposonsToFile(putativeTransposons, bamNameStore, options.browserTracks, "predicted_transposons");
+		writeTransposonsToFile(putativeTransposons, bamNameStore, options.browserTracks, "predicted_transposons", totalReadCount);
 		stopwatch(options.verbosity);
 		if (options.plot)
 		{
