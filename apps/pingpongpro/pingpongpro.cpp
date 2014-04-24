@@ -240,7 +240,7 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	ArgumentParser parser("pingpongpro");
 
 	// define usage and description
-	addUsageLine(parser, "[\\fIOPTIONS\\fP] [-i \\fISAM_INPUT_FILE\\fP [-i ...]] [-o \\fIOUTPUT_DIRECTORY\\fP]");
+	addUsageLine(parser, "[\\fIOPTIONS\\fP] [-i \\fISAM_INPUT_FILE\\fP] [-o \\fIOUTPUT_DIRECTORY\\fP]");
 	setShortDescription(parser, "Find ping-pong signatures like a pro");
 	addDescription(parser, "PingPongPro scans piRNA-Seq data for signs of ping-pong cycle activity. The ping-pong cycle produces piRNA molecules with complementary 5'-ends. These molecules appear as stacks of aligned reads whose 5'-ends overlap with the 5'-ends of reads on the opposite strand by exactly 10 bases.");
 	setVersion(parser, "1.0");
@@ -253,7 +253,7 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	setDefaultValue(parser, "min-stack-height", 0);
 	setMinValue(parser, "min-stack-height", "0");
 
-	addOption(parser, ArgParseOption("i", "input", "Input file(s) in SAM/BAM format. \"-\" means stdin.", ArgParseArgument::INPUTFILE, "PATH", true));
+	addOption(parser, ArgParseOption("i", "input", "Input file in SAM/BAM format. \"-\" means stdin.", ArgParseArgument::INPUTFILE, "PATH", true));
 	setDefaultValue(parser, "input", "-");
 	setValidValues(parser, "input", ".bam .sam -");
 
