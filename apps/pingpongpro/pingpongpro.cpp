@@ -43,9 +43,9 @@ using namespace seqan;
 // ==========================================================================
 
 #if defined(WIN32) || defined(_WIN32) 
-#define PATH_delimiter '\\' 
+#define PATH_DELIMITER '\\' 
 #else 
-#define PATH_delimiter '/'
+#define PATH_DELIMITER '/'
 #endif
 
 // type to hold the list of input files given as arguments to the program
@@ -240,7 +240,7 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	ArgumentParser parser("pingpongpro");
 
 	// define usage and description
-	addUsageLine(parser, "[\\fIOPTIONS\\fP] [-i \\fISAM_INPUT_FILE\\fP] [-o \\fIOUTPUT_DIRECTORY\\fP]");
+	addUsageLine(parser, "[\\fIOPTIONS\\fP] -i \\fISAM_INPUT_FILE\\fP [-o \\fIOUTPUT_DIRECTORY\\fP]");
 	setShortDescription(parser, "Find ping-pong signatures like a pro");
 	addDescription(parser, "PingPongPro scans piRNA-Seq data for signs of ping-pong cycle activity. The ping-pong cycle produces piRNA molecules with complementary 5'-ends. These molecules appear as stacks of aligned reads whose 5'-ends overlap with the 5'-ends of reads on the opposite strand by exactly 10 bases.");
 	setVersion(parser, "1.0");
@@ -253,9 +253,9 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	setDefaultValue(parser, "min-stack-height", 0);
 	setMinValue(parser, "min-stack-height", "0");
 
-	addOption(parser, ArgParseOption("i", "input", "Input file in SAM/BAM format. \"-\" means stdin.", ArgParseArgument::INPUTFILE, "PATH", true));
-	setDefaultValue(parser, "input", "-");
-	setValidValues(parser, "input", ".bam .sam -");
+	addOption(parser, ArgParseOption("i", "input", "Input file in SAM/BAM format.", ArgParseArgument::INPUTFILE, "PATH", true));
+	setValidValues(parser, "input", ".bam .sam");
+	setRequired(parser, "input");
 
 	addOption(parser, ArgParseOption("l", "min-alignment-length", "Ignore alignments in the input file that are shorter than the specified length.", ArgParseArgument::INTEGER, "LENGTH"));
 	setDefaultValue(parser, "min-alignment-length", 24);
@@ -291,18 +291,10 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	options.browserTracks = isSet(parser, "browserTracks");
 
 	options.inputFiles.resize(getOptionValueCount(parser, "input")); // store input files in vector
-	if (options.inputFiles.size() == 0)
-	{
-		options.inputFiles.push_back("/dev/stdin"); // read from stdin, if no input file is given
-	}
-	else
+	if (options.inputFiles.size() > 0)
 	{
 		for (vector< string >::size_type i = 0; i < options.inputFiles.size(); i++)
-		{
 			getOptionValue(options.inputFiles[i], parser, "input", i);
-			if (options.inputFiles[i] == "-")
-				options.inputFiles[i] = "/dev/stdin";
-		}
 	}
 
 	string countMultiHits;
@@ -332,8 +324,8 @@ ArgumentParser::ParseResult parseCommandLine(AppOptions &options, int argc, char
 	}
 
 	getOptionValue(options.output, parser, "output");
-	if ((length(options.output) > 0) && (options.output[length(options.output)-1] != PATH_delimiter))
-		options.output += PATH_delimiter; // append slash to output path, if missing
+	if ((length(options.output) > 0) && (options.output[length(options.output)-1] != PATH_DELIMITER))
+		options.output += PATH_DELIMITER; // append slash to output path, if missing
 
 	options.plot = isSet(parser, "plot");
 
@@ -1569,7 +1561,11 @@ int main(int argc, char const ** argv)
 	// go to output directory
 	if (length(options.output) > 0)
 	{
+		#if defined(WIN32) || defined(_WIN32) 
+		mkdir(toCString(options.output));
+		#else
 		mkdir(toCString(options.output), 0777);
+		#endif
 		if (chdir(toCString(options.output)) != 0)
 		{
 			cerr << "Failed to open output directory: " << options.output;
