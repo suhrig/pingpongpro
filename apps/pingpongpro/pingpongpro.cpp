@@ -31,7 +31,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <list>
 #include <ctime>
 #include <fstream>
-#define _USE_MATH_DEFINES
 #include <cmath>
 #include <string>
 
@@ -47,6 +46,8 @@ using namespace seqan;
 #else 
 #define PATH_DELIMITER '/'
 #endif
+
+#define M_PI 3.14159265358979323846
 
 // type to hold the list of input files given as arguments to the program
 typedef vector<CharString> TInputFiles;
@@ -1562,11 +1563,12 @@ int main(int argc, char const ** argv)
 	if (length(options.output) > 0)
 	{
 		#if defined(WIN32) || defined(_WIN32) 
-		mkdir(toCString(options.output));
+		CreateDirectory(toCString(options.output), NULL);
+		if (SetCurrentDirectory(toCString(options.output)) == 0)
 		#else
 		mkdir(toCString(options.output), 0777);
-		#endif
 		if (chdir(toCString(options.output)) != 0)
+		#endif
 		{
 			cerr << "Failed to open output directory: " << options.output;
 			return 1;
