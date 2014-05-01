@@ -977,7 +977,7 @@ void generateGroupedStackCountsPlot(TGroupedStackCountsByOverlap &groupedStackCo
 			}
 
 	// render histograms
-	plotHistogram("ping-pong_signature_z-scores", plotTitles, histograms);
+	plotHistogram("ping-pong_signatures_z-scores", plotTitles, histograms);
 }
 
 // this functions reads genomic regions of transposons from a file
