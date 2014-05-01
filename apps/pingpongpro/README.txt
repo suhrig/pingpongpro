@@ -1,8 +1,7 @@
 Name: PingPongPro
-Author: Sebastian Uhrig <s.uhrig@imb-mainz.de>
+Author: Sebastian Uhrig <suhrig@students.uni-mainz.de>
 License: GPL v3
-Copyright: 2014, Sebastian Uhrig,
-           Institute of Molecular Biology gGmbH, Mainz
+Copyright: 2014, Sebastian Uhrig
 Description: Find ping-pong signatures like a pro
  Piwi-interacting RNAs (piRNAs) are a class of small non-coding RNAs,
  predominantly active in the germ line. There, they limit the detrimental
